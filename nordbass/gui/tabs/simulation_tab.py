@@ -65,7 +65,6 @@ FREQ_MIN   = 10.0
 FREQ_MAX   = 500.0
 FREQ_POINTS = 600
 
-# Tick marks shown on the frequency axis
 FREQ_TICKS = [10, 15, 20, 30, 40, 50, 60, 80, 100, 150, 200, 300, 400, 500]
 
 
@@ -74,8 +73,6 @@ def _logfreqs():
 
 
 class PlotCanvas(FigureCanvas):
-    """Three-panel plot: SPL / Excursion / Port velocity / Impedance."""
-
     def __init__(self, parent=None):
         self.fig = Figure(figsize=(sf(5), sf(8)), tight_layout=True)
         super().__init__(self.fig)
@@ -84,7 +81,6 @@ class PlotCanvas(FigureCanvas):
         self._comparison_data = None
         self._bg = None
         self._apply_mpl_theme()
-        
         self.line_spl = None
         self.line_exc = None
         self.line_vel = None
@@ -93,15 +89,12 @@ class PlotCanvas(FigureCanvas):
         self.line_chuff = None
         self.line_comp = None
         self.line_fb = []
-        
         self.line_comp_spl = None
         self.line_comp_exc = None
         self.line_comp_vel = None
         self.line_comp_imp = None
-
         self._build_axes()
         get_theme().register(self._on_theme_changed)
-
         self.mpl_connect("motion_notify_event", self._on_mouse_move)
         self.mpl_connect("draw_event", self._on_draw)
         self._cursor_vlines = []
@@ -151,98 +144,80 @@ class PlotCanvas(FigureCanvas):
         p = get_theme().palette
         self.fig.clear()
         self.fig.set_facecolor(p["mpl_bg"])
-        self.ax_spl, self.ax_exc, self.ax_vel, self.ax_imp = self.fig.subplots(
-            4, 1, sharex=True)
-
+        self.ax_spl, self.ax_exc, self.ax_vel, self.ax_imp = self.fig.subplots(4, 1, sharex=True)
         self._cursor_vlines = []
         for ax in (self.ax_spl, self.ax_exc, self.ax_vel, self.ax_imp):
             ax.set_facecolor(p["mpl_axes_bg"])
             ax.set_xscale("log")
             ax.set_xticks(FREQ_TICKS)
-            ax.xaxis.set_major_formatter(
-                ticker.FuncFormatter(lambda x, _: str(int(x))))
+            ax.xaxis.set_major_formatter(ticker.FuncFormatter(lambda x, _: str(int(x))))
             ax.xaxis.set_minor_locator(ticker.NullLocator())
-            ax.grid(True, which="major", linestyle="--", alpha=0.45,
-                    color=p["mpl_grid"])
+            ax.grid(True, which="major", linestyle="--", alpha=0.45, color=p["mpl_grid"])
             ax.set_xlim(FREQ_MIN, FREQ_MAX)
-            ax.tick_params(axis="x", labelsize=7, rotation=45,
-                           colors=p["mpl_text"])
+            ax.tick_params(axis="x", labelsize=7, rotation=45, colors=p["mpl_text"])
             ax.tick_params(axis="y", colors=p["mpl_text"], labelsize=7)
             for spine in ax.spines.values():
                 spine.set_edgecolor(p["mpl_spine"])
             v_line = ax.axvline(x=10, color="gray", linestyle="-", alpha=0.3, visible=False, animated=True)
             self._cursor_vlines.append(v_line)
-
-        self.ax_spl.set_ylabel("SPL (dB)",        fontsize=8, color=p["mpl_text"])
+        self.ax_spl.set_ylabel("SPL (dB)", fontsize=8, color=p["mpl_text"])
         self.ax_spl.set_title("Frequency Response", fontsize=9, color=p["mpl_text"])
-        self.ax_exc.set_ylabel("Exc. (mm)",   fontsize=8, color=p["mpl_text"])
-        self.ax_exc.set_title("Cone Excursion",    fontsize=9, color=p["mpl_text"])
-        self.ax_vel.set_ylabel("Vel. (m/s)",   fontsize=8, color=p["mpl_text"])
-        self.ax_vel.set_title("Port Air Velocity",  fontsize=9, color=p["mpl_text"])
-        self.ax_imp.set_ylabel("Imp. (Ω)",   fontsize=8, color=p["mpl_text"])
+        self.ax_exc.set_ylabel("Exc. (mm)", fontsize=8, color=p["mpl_text"])
+        self.ax_exc.set_title("Cone Excursion", fontsize=9, color=p["mpl_text"])
+        self.ax_vel.set_ylabel("Vel. (m/s)", fontsize=8, color=p["mpl_text"])
+        self.ax_vel.set_title("Port Air Velocity", fontsize=9, color=p["mpl_text"])
+        self.ax_imp.set_ylabel("Imp. (Ω)", fontsize=8, color=p["mpl_text"])
         self.ax_imp.set_title("Electrical Impedance", fontsize=9, color=p["mpl_text"])
-        self.ax_imp.set_xlabel("Frequency (Hz)",   fontsize=8, color=p["mpl_text"])
-        
+        self.ax_imp.set_xlabel("Frequency (Hz)", fontsize=8, color=p["mpl_text"])
         self.line_spl, = self.ax_spl.plot([], [], color="#2196F3", linewidth=1.6)
         self.line_exc, = self.ax_exc.plot([], [], color="#4CAF50", linewidth=1.6, label="Driver Xpeak")
         self.line_pr_exc, = self.ax_exc.plot([], [], color="#FF9800", linewidth=1.2, linestyle="-.", label="PR Xpeak")
         self.line_vel, = self.ax_vel.plot([], [], color="#9C27B0", linewidth=1.6, label="Port Velocity")
         self.line_imp, = self.ax_imp.plot([], [], color="#FFD600", linewidth=1.6, label="Impedance")
-        
         self.line_xmax = self.ax_exc.axhline(0, color="#F44336", linestyle="--", linewidth=1.2, visible=False)
         self.line_chuff, = self.ax_vel.plot([], [], color="#FF5722", linestyle="--", linewidth=1.2)
         self.line_comp, = self.ax_vel.plot([], [], color="#F44336", linestyle=":", linewidth=1.2)
-        
         kw_comp = {"color": "gray", "alpha": 0.4, "linestyle": "--", "linewidth": 1.2}
         self.line_comp_spl, = self.ax_spl.plot([], [], **kw_comp)
         self.line_comp_exc, = self.ax_exc.plot([], [], **kw_comp)
         self.line_comp_vel, = self.ax_vel.plot([], [], **kw_comp)
         self.line_comp_imp, = self.ax_imp.plot([], [], **kw_comp)
-        
         self.line_fb = []
 
     def plot(self, freqs, spl, excursion, xmax_mm,
              port_velocity=None, chuff_limit=None, comp_limit=None,
              impedance=None, fb=None, box_type="vented", pr_excursion=None):
-        
         self.line_spl.set_data(freqs, spl)
         self.line_exc.set_data(freqs, excursion)
-        
         if pr_excursion is not None:
             self.line_pr_exc.set_data(freqs, pr_excursion)
             self.line_pr_exc.set_visible(True)
         else:
             self.line_pr_exc.set_visible(False)
-
         if port_velocity is not None:
             self.line_vel.set_data(freqs, port_velocity)
             self.line_vel.set_visible(True)
         else:
             self.line_vel.set_visible(False)
-            
         if impedance is not None:
             self.line_imp.set_data(freqs, impedance)
             self.line_imp.set_visible(True)
             self.ax_imp.set_ylim(0, max(np.max(impedance)*1.1, 10))
         else:
             self.line_imp.set_visible(False)
-
         self.line_xmax.set_ydata([xmax_mm, xmax_mm])
         self.line_xmax.set_visible(True)
         self.line_xmax.set_label(f"Xmax {xmax_mm:.1f} mm")
-        
         if chuff_limit is not None:
             self.line_chuff.set_data(freqs, chuff_limit)
             self.line_chuff.set_visible(True)
         else:
             self.line_chuff.set_visible(False)
-            
         if comp_limit is not None:
             self.line_comp.set_data(freqs, comp_limit)
             self.line_comp.set_visible(True)
         else:
             self.line_comp.set_visible(False)
-
         for l in self.line_fb:
             l.remove()
         self.line_fb = []
@@ -253,7 +228,6 @@ class PlotCanvas(FigureCanvas):
             self.line_spl.set_label(f"SPL (Fb {fb:.1f} Hz)")
         else:
             self.line_spl.set_label("SPL")
-
         if self._comparison_data:
             cf, cs, ce, cv, ci = self._comparison_data
             self.line_comp_spl.set_data(cf, cs)
@@ -271,28 +245,22 @@ class PlotCanvas(FigureCanvas):
         else:
             for l in (self.line_comp_spl, self.line_comp_exc, self.line_comp_vel, self.line_comp_imp):
                 l.set_visible(False)
-
         s_max = np.nanmax(spl)
         self.ax_spl.set_ylim(max(s_max-40, 60), s_max+5)
-        
         e_mask = (freqs >= 20)
         e_max = np.nanmax(excursion[e_mask])
         if pr_excursion is not None:
             e_max = max(e_max, np.nanmax(pr_excursion[e_mask]))
-        
         self.ax_exc.set_ylim(0, max(e_max*1.2, xmax_mm*1.2))
-        
         if port_velocity is not None:
             v_max = np.nanmax(port_velocity[e_mask])
             self.ax_vel.set_ylim(0, max(v_max*1.2, 30))
-
         self.ax_spl.legend(fontsize=7, loc="lower right")
         self.ax_exc.legend(fontsize=7, loc="upper right")
         if port_velocity is not None:
             self.ax_vel.legend(fontsize=7, loc="upper right")
         if impedance is not None:
             self.ax_imp.legend(fontsize=7, loc="upper right")
-
         self.draw()
 
 
@@ -371,7 +339,6 @@ class SimulationTab(QWidget):
         self.spin_power      = _spinbox(0.1, 10000, 100, " W", 0)
         self.chk_room_gain   = QCheckBox("Simulate Room/Cabin Gain (40Hz)")
         self.chk_room_gain.toggled.connect(self._calculate)
-        
         self.pr_widget = QWidget()
         pr_form = QFormLayout(self.pr_widget)
         pr_form.setContentsMargins(0, 0, 0, 0)
@@ -381,19 +348,17 @@ class SimulationTab(QWidget):
         pr_form.addRow("PR Fs:", self.spin_pr_fs)
         pr_form.addRow("PR Vas:", self.spin_pr_vas)
         pr_form.addRow("PR Qms:", self.spin_pr_qms)
-        
         self.combo_alignment = QComboBox()
         _alignments = [
-            ("QB3",  "QB3 — Quasi-Butterworth 3rd order\nThe most common alignment for car audio subwoofers."),
-            ("B4",   "B4 — Butterworth 4th order\nMaximally flat response."),
-            ("SC4",  "SC4 — Sub-Chebyshev 4th order\nDeeper bass extension than B4 in the same box size."),
-            ("SBB4", "SBB4 — Super Butterworth Bass 4th order\nMaximises bass output."),
+            ("QB3",  "QB3 — Quasi-Butterworth 3rd order"),
+            ("B4",   "B4 — Butterworth 4th order"),
+            ("SC4",  "SC4 — Sub-Chebyshev 4th order"),
+            ("SBB4", "SBB4 — Super Butterworth Bass 4th order"),
         ]
         for text, tip in _alignments:
             self.combo_alignment.addItem(text)
             self.combo_alignment.setItemData(
-                self.combo_alignment.count() - 1, tip,
-                Qt.ItemDataRole.ToolTipRole)
+                self.combo_alignment.count() - 1, tip, Qt.ItemDataRole.ToolTipRole)
         self.param_form.addRow("Net Volume:",    self.spin_volume)
         self.param_form.addRow("Rear Volume:",   self.spin_volume_rear)
         self.param_form.addRow("Tuning Fb:",     self.spin_fb)
@@ -414,26 +379,23 @@ class SimulationTab(QWidget):
         port_form.addRow("Shape:", self.combo_port_shape)
         self.spin_port_count = _spinbox(1, 8, 1, "")
         port_form.addRow("# Ports:", self.spin_port_count)
-
         self.round_widget = QWidget()
         rf = QFormLayout(self.round_widget)
         rf.setContentsMargins(0, 0, 0, 0)
         self.spin_port_diam = _spinbox(10, 500, 75, " mm")
         rf.addRow("Diameter:", self.spin_port_diam)
-
         self.slot_widget = QWidget()
-        slot_f = QFormLayout(self.slot_widget)
-        slot_f.setContentsMargins(0, 0, 0, 0)
+        sf_w = QFormLayout(self.slot_widget)
+        sf_w.setContentsMargins(0, 0, 0, 0)
         self.spin_slot_w = _spinbox(10, 800, 100, " mm")
         self.spin_slot_h = _spinbox(10, 800,  50, " mm")
         self.lbl_eq_diam = QLabel("Eq. diam: —")
         self.lbl_eq_diam.setStyleSheet(f"color:gray;font-size:{font_size(11)}")
         self.spin_slot_w.valueChanged.connect(self._update_eq_diam)
         self.spin_slot_h.valueChanged.connect(self._update_eq_diam)
-        slot_f.addRow("Width:",  self.spin_slot_w)
-        slot_f.addRow("Height:", self.spin_slot_h)
-        slot_f.addRow(self.lbl_eq_diam)
-
+        sf_w.addRow("Width:",  self.spin_slot_w)
+        sf_w.addRow("Height:", self.spin_slot_h)
+        sf_w.addRow(self.lbl_eq_diam)
         self.port_stack = QStackedWidget()
         self.port_stack.addWidget(self.round_widget)
         self.port_stack.addWidget(self.slot_widget)
@@ -454,8 +416,7 @@ class SimulationTab(QWidget):
         res_layout  = QGridLayout(res_inner)
         res_layout.setContentsMargins(0, 0, 0, 0)
         self._result_labels = {}
-        for i, key in enumerate(
-                ["F3", "Fb / Fc", "Qtc", "SPL 1W/1m", "EBP", "Port length"]):
+        for i, key in enumerate(["F3", "Fb / Fc", "Qtc", "SPL 1W/1m", "EBP", "Port length"]):
             lbl = QLabel("-")
             lbl.setTextInteractionFlags(Qt.TextSelectableByMouse)
             res_layout.addWidget(QLabel(key + ":"), i, 0)
@@ -491,8 +452,7 @@ class SimulationTab(QWidget):
                   self.spin_port_diam, self.spin_slot_w, self.spin_slot_h,
                   self.spin_pr_fs, self.spin_pr_vas, self.spin_pr_qms):
             w.valueChanged.connect(self._calculate)
-        for w in (self.driver_combo, self.combo_wiring, self.combo_alignment,
-                  self.combo_port_shape):
+        for w in (self.driver_combo, self.combo_wiring, self.combo_alignment, self.combo_port_shape):
             w.currentIndexChanged.connect(self._calculate)
         self.radio_sealed.toggled.connect(self._calculate)
         self.radio_bp4.toggled.connect(self._calculate)
@@ -648,29 +608,24 @@ class SimulationTab(QWidget):
         base_driver = self._get_driver()
         if not base_driver:
             return
-
         driver = effective_driver_params(
             base_driver,
             count=int(self.spin_drv_count.value()),
             wiring=self.combo_wiring.currentText().lower()
         )
-
         freqs     = _logfreqs()
         vb        = litre_to_m3(self.spin_volume.value())
         power     = self.spin_power.value()
         num_ports = int(self.spin_port_count.value())
         port_area, eq_diam = self._get_port_area_and_eq_diam()
-
         st = get_state()
         st.driver_id   = base_driver.id
         st.driver_name = f"{base_driver.name} ({base_driver.manufacturer})" if base_driver.manufacturer else base_driver.name
         st.volume_l    = self.spin_volume.value()
-        
         if self.radio_sealed.isChecked(): st.box_type = "sealed"
         elif self.radio_bp4.isChecked():  st.box_type = "bp4"
         elif self.radio_pr.isChecked():   st.box_type = "pr"
         else:                             st.box_type = "vented"
-
         st.port.shape  = "round" if self.combo_port_shape.currentIndex() == 0 else "slot"
         st.port.count  = int(self.spin_port_count.value())
         if st.port.shape == "round":
@@ -680,10 +635,8 @@ class SimulationTab(QWidget):
             st.port.slot_w_mm = self.spin_slot_w.value()
             st.port.slot_h_mm = self.spin_slot_h.value()
             st.port.eq_diam_m = eq_diam
-
         ebp = driver.fs / driver.qes if driver.qes else 0
         self._result_labels["EBP"].setText(f"{ebp:.1f}")
-        
         if driver.qes > 0:
             eta_0 = (4 * math.pi**2 * driver.fs**3 * driver.vas) / (343.0**3 * driver.qes)
             spl_1w1m = 10 * math.log10(max(eta_0, 1e-30)) + 112.1
@@ -760,14 +713,10 @@ class SimulationTab(QWidget):
                 spl = apply_room_gain(freqs, spl, 40.0)
             exc, xmax_mm = cone_excursion_array(driver, vb, fb, freqs, power, "vented")
             port_vel = port_air_velocity_array(
-                driver, vb, fb, port_area, num_ports, freqs,
-                input_power=power, box_type="vented")
+                driver, vb, fb, port_area, num_ports, freqs, input_power=power, box_type="vented")
             imp = impedance_array(driver, vb, fb, freqs, "vented")
-            chuff = np.array([
-                chuffing_velocity_limit(eq_diam, f, masking=0.15)
-                for f in freqs])
-            comp = np.array([
-                compression_velocity_limit(eq_diam, f) for f in freqs])
+            chuff = np.array([chuffing_velocity_limit(eq_diam, f, masking=0.15) for f in freqs])
+            comp  = np.array([compression_velocity_limit(eq_diam, f) for f in freqs])
             port_len = port_length_for_tuning(fb, vb, port_area, num_ports)
             st.port.length_m = port_len
             st.fb_hz         = fb
@@ -777,11 +726,9 @@ class SimulationTab(QWidget):
             self._result_labels["Fb / Fc"].setText(f"Fb = {fb:.1f} Hz")
             self._result_labels["Qtc"].setText("-")
             if self.combo_port_shape.currentIndex() == 0:
-                port_desc = (f"{port_len*1000:.0f} mm  "
-                             f"(\u00f8{eq_diam*1000:.0f} \u00d7 {num_ports})")
+                port_desc = (f"{port_len*1000:.0f} mm  (\u00f8{eq_diam*1000:.0f} \u00d7 {num_ports})")
             else:
-                port_desc = (f"{port_len*1000:.0f} mm  "
-                             f"({self.spin_slot_w.value():.0f}\u00d7"
+                port_desc = (f"{port_len*1000:.0f} mm  ({self.spin_slot_w.value():.0f}\u00d7"
                              f"{self.spin_slot_h.value():.0f} mm \u00d7 {num_ports})")
             self._result_labels["Port length"].setText(port_desc)
             self._last_run_data = (freqs, spl, exc, port_vel, imp)
