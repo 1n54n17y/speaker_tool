@@ -1,0 +1,3 @@
+[console_scripts]
+nordbass = nordbass.cli.app:app
+nordbass-gui = nordbass.gui.main_window:main

@@ -1,0 +1,77 @@
+NordBass CLI — Complete Command Reference
+Launch the GUI
+
+nordbass gui
+_____________________________________________
+
+driver commands
+
+nordbass driver add	            |   Add a driver interactively (prompts for all T/S parameters)
+nordbass driver list	        |   Show all drivers in the database
+nordbass driver delete <ID>	    |   Delete a driver (you can use just the first few characters of the ID)
+nordbass driver import <file>	|   Import drivers from a CSV or XLSX file
+nordbass driver export <file>	|   Export all drivers to a CSV file
+
+examples
+nordbass driver add
+nordbass driver list
+nordbass driver delete a3f2
+nordbass driver import NordBass_Driver_Library.xlsx
+nordbass driver export my_drivers.csv
+_____________________________________________
+Simulation commands
+Sealed box
+
+nordbass simulate sealed <driver_id>
+nordbass simulate sealed <driver_id> --volume 30
+nordbass simulate sealed <driver_id> --volume 30 --qtc 0.707
+
+Option	     |Default	|Description
+--volume / -v|	auto	|Box volume in litres
+--qtc	     |0.707	    |Target Qtc (only used when volume is not set)
+_____________________________________________
+Vented box
+
+nordbass simulate vented <driver_id>
+nordbass simulate vented <driver_id> --volume 60 --fb 35
+nordbass simulate vented <driver_id> --alignment B4
+Option	        |Default	|Description
+--volume / -v   |	auto	|Box volume in litres
+--fb	        |  auto	    |Tuning frequency in Hz
+--alignment / -a|	QB3	    |Alignment: QB3, B4, SC4, SBB4
+_____________________________________________
+
+Geometry command
+
+nordbass geometry --volume 60
+nordbass geometry --volume 60 --thickness 18
+nordbass geometry --volume 60 --width 400 --depth 350
+
+Option	                        |Default	|Description
+--volume / -v                   |required   |Net internal volume in litres
+--thickness / -t                |18         |Panel thickness in mm
+--width / -W                    |auto       |Fix the width in mm
+--depth / -D                    |auto       |Fix the depth in mm
+--hheight / -H                  |auto       |Fix the height in mm
+--double-front / --single-front |double     |Double-layered front baffle
+_____________________________________________
+Flare analysis command
+
+nordbass flare --diameter 75
+nordbass flare --diameter 75 --flare 20
+nordbass flare --diameter 75 --flare 20 --masking 0.30
+
+Option	            |Default	|Description
+--diameter / -d     |required   |Port inner diameter in mm
+--flare / -f        |0          |Flare radius in mm
+--masking / -m      |0.15       |0 = none, 0.15 = music, 0.30 = home theatre
+_____________________________________________
+General tips
+
+-Driver IDs — you never need to type the full ID, just the first 4–6 characters, e.g. a3f2
+-Get help on any command — add --help at the end:
+nordbass simulate vented --help
+nordbass geometry --help
+
+-Top-level help:
+nordbass --help
