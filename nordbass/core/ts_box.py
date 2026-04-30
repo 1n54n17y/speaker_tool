@@ -206,14 +206,18 @@ def apply_le_correction(freqs: np.ndarray, spl: np.ndarray, le: float, re: float
 
 def apply_room_gain(freqs: np.ndarray, spl: np.ndarray, corner_freq: float = 40.0) -> np.ndarray:
     """
-    Simulate room/cabin gain (typically 12dB/oct boost below corner freq).
+    Simulate room/cabin gain (approx +12 dB/oct below corner_freq).
+
+    FIX (Bug 4): replaced the previous discontinuous step function with a
+    smooth 4th-order shelving function:
+        gain_dB = -10 * log10(1 + (fc/f)^4)
+    which gives the correct +12 dB/oct asymptote at low frequencies
+    and rolls off smoothly to 0 dB above corner_freq.
     """
-    gain = np.zeros(len(freqs))
-    for i, f in enumerate(freqs):
-        if f < corner_freq:
-            # 12dB per octave is 40 * log10(corner/f)
-            gain[i] = 40 * math.log10(corner_freq / f)
-    return spl + gain
+    ratio = (corner_freq / np.maximum(freqs, 1e-6)) ** 4
+    gain  = -10.0 * np.log10(1.0 + ratio)
+    # gain is negative above corner, so subtracting it adds boost below corner
+    return spl - gain
 
 
 # ---------------------------------------------------------------------------
@@ -338,6 +342,10 @@ def vented_alignment(
 
     Supported: QB3, SC4, B4, Butterworth / SBB4.
     Uses standard Thiele/Small alignment polynomials.
+
+    FIX (Bug 2): B4 and SBB4 now correctly use h = 1.0 (Fb = Fs),
+    per Small (1973). alpha formula corrected to (Qts/k)^2 - 1.
+    SC4 uses h = 0.9 per its own polynomial condition.
     """
     qts = driver.qts
     if qts > 0.8:
@@ -350,23 +358,24 @@ def vented_alignment(
 
     # Alignment polynomials from Thiele/Small (1971-1973) and Keele (1973).
     # alpha = Vas/Vb, h = Fb/Fs
-    # These are empirical fits valid for Qts ≈ 0.20–0.50
     if alignment == "QB3":
         # Quasi-Butterworth 3rd order — from Keele (1973) Table I
         alpha = 1.0 / (20.0 * qts_for_formula**3.3)
         h = (0.26 * qts_for_formula + 0.86) * qts_for_formula**(-0.35)
     elif alignment == "B4":
-        # Butterworth 4th order (maximally flat amplitude)
-        alpha = (qts_for_formula / 0.383) ** 2
-        h = math.sqrt(1.0 + alpha) * (qts_for_formula / 0.383)
+        # Butterworth 4th order — Small (1973).
+        # h = 1.0 (Fb = Fs always for B4); alpha = (Qts/0.383)^2 - 1
+        alpha = max(0.0, (qts_for_formula / 0.383) ** 2 - 1.0)
+        h = 1.0
     elif alignment == "SC4":
-        # Sub-Chebyshev 4th order (0.1 dB passband ripple)
-        alpha = (qts_for_formula / 0.315) ** 2
-        h = math.sqrt(1.0 + alpha) * (qts_for_formula / 0.315) * 0.9
+        # Sub-Chebyshev 4th order (0.1 dB passband ripple).
+        alpha = max(0.0, (qts_for_formula / 0.315) ** 2 - 1.0)
+        h = 0.9
     elif alignment in ("Butterworth", "SBB4"):
-        # Super-Butterworth B4 — flat group delay version
-        alpha = (qts_for_formula / 0.402) ** 2
-        h = math.sqrt(1.0 + alpha) * (qts_for_formula / 0.402)
+        # Super-Butterworth B4 — flat group delay version.
+        # h = 1.0 condition same as B4; alpha from Qts/0.402 polynomial.
+        alpha = max(0.0, (qts_for_formula / 0.402) ** 2 - 1.0)
+        h = 1.0
     else:
         raise ValueError(f"Unknown alignment: {alignment}")
 
@@ -390,6 +399,9 @@ def vented_spl_array(
     Compute SPL vs frequency for a vented box using the 4th-order
     Thiele/Small high-pass transfer function.
 
+    FIX (Bug 1): w^2 denominator coefficient now includes the missing
+    cross-loss term h/(Qts*Ql): h^2 + 1 + alpha + h/(Qts*Ql).
+
     Returns SPL in dB (at 1 m).
     """
     if driver.qes > 0:
@@ -409,13 +421,13 @@ def vented_spl_array(
     x = freqs / driver.fs
     w = 1j * x
 
-    # 4th-order polynomial including box losses Ql
-    # From Small (1973)
+    # 4th-order polynomial from Small (1973), including cross-loss term.
+    # w^2 coefficient = h^2 + 1 + alpha + h/(Qts*Ql)
     D = (
         w**4
         + w**3 * (h / qts + h / ql)
-        + w**2 * (h**2 + 1 + alpha)
-        + w * (h / qts + h * (1 + alpha) / ql)
+        + w**2 * (h**2 + 1.0 + alpha + h / (qts * ql))
+        + w * (h / qts + h * (1.0 + alpha) / ql)
         + h**2
     )
 
@@ -441,6 +453,9 @@ def bandpass_4th_spl_array(
     """
     Compute SPL vs frequency for a 4th-order bandpass enclosure.
     Vr = Rear sealed chamber volume, Vf = Front vented chamber volume.
+
+    FIX (Bug 8): w^2 coefficient now includes the h/(Qts*Ql) cross-loss
+    term, consistent with the vented_spl_array fix (Bug 1).
     """
     if driver.qes > 0:
         eta_0 = (4 * math.pi**2 * driver.fs**3 * driver.vas) / (C**3 * driver.qes)
@@ -456,17 +471,16 @@ def bandpass_4th_spl_array(
 
     wn = 1j * freqs / driver.fs
 
-    # BP4 transfer function poly
+    # BP4 denominator with corrected w^2 cross-loss term
     D = (
         wn**4
         + wn**3 * (h / qts + h / ql)
-        + wn**2 * (h**2 + 1 + alpha_r + alpha_f)
-        + wn * (h * (1 + alpha_r) / qts + h * (1 + alpha_r + alpha_f) / ql)
-        + h**2 * (1 + alpha_r)
+        + wn**2 * (h**2 + 1.0 + alpha_r + alpha_f + h / (qts * ql))
+        + wn * (h * (1.0 + alpha_r) / qts + h * (1.0 + alpha_r + alpha_f) / ql)
+        + h**2 * (1.0 + alpha_r)
     )
 
-    # Numerator for BP4 is s^2 * alpha_f * h
-    # This represents the output from the front port.
+    # Numerator for BP4: s^2 * alpha_f * h (output from front port)
     tf = np.abs((wn**2 * alpha_f * h) / D)
 
     spl_db = spl_ref + 20 * np.log10(np.maximum(tf, 1e-12))
@@ -484,7 +498,13 @@ def passive_radiator_spl_array(
 ) -> np.ndarray:
     """
     Compute SPL for a Passive Radiator enclosure.
-    Includes the characteristic notch at the PR's free-air resonance.
+
+    FIX (Bug 7 — three sub-fixes):
+      1. Numerator corrected from wn^2*(wn^2+hp^2) to wn^4.
+         The artificial notch was an excursion artefact, not a far-field
+         SPL feature. Correct far-field SPL numerator is wn^4.
+      2. w^2 denominator term now includes alpha_pr (was missing).
+      3. w^1 denominator term now includes alpha_pr contribution.
     """
     if driver.qes > 0:
         eta_0 = (4 * math.pi**2 * driver.fs**3 * driver.vas) / (C**3 * driver.qes)
@@ -495,29 +515,25 @@ def passive_radiator_spl_array(
     alpha = driver.vas / vb
     alpha_pr = pr_vas / vb
     
-    # Tuning frequency h = fb/fs
+    # Tuning frequency
     fb = pr_fs * math.sqrt(1 + pr_vas / vb)
     h = fb / driver.fs
-    
-    # PR resonance ratio (normalized to driver fs)
-    hp = pr_fs / driver.fs
-    
+
     qts = driver.qts
     
-    # Standard 4th order denominator for PR/Vented
-    # D(s) = s^4 + s^3(...) + s^2(...) + s(...) + 1
     wn = 1j * freqs / driver.fs
+
+    # Corrected 4th-order PR denominator with all alpha_pr terms present
     D = (
         wn**4
         + wn**3 * (h / qts + h / pr_qms)
-        + wn**2 * (h**2 + 1 + alpha + alpha_pr)
-        + wn * (h / qts + h * (1 + alpha) / pr_qms)
+        + wn**2 * (h**2 + 1.0 + alpha + alpha_pr + h / (qts * pr_qms))
+        + wn * (h / qts + h * (1.0 + alpha + alpha_pr) / pr_qms)
         + h**2
     )
 
-    # The PR transfer function has a numerator that causes a notch at hp
-    # T(s) = s^2 * (s^2 + hp^2) / D(s)
-    tf = np.abs((wn**2 * (wn**2 + hp**2)) / D)
+    # Correct far-field SPL numerator: wn^4
+    tf = np.abs(wn**4 / D)
     
     spl_db = spl_ref + 20 * np.log10(np.maximum(tf, 1e-12))
     return apply_le_correction(freqs, spl_db, driver.le, driver.re)
@@ -628,8 +644,13 @@ def complex_transfer_function(
 ) -> np.ndarray:
     """
     Returns the complex transfer function H(s) for the given enclosure.
+
+    FIX (Bug 3): All vented/BP4/PR denominators now include the
+    h/(Qts*Ql) cross-loss term in the w^2 coefficient, matching
+    the vented_spl_array correction (Bug 1).
     """
     wn = 1j * freqs / driver.fs
+    ql = 7.0
     
     if box_type == "sealed":
         params = sealed_params(driver, vb)
@@ -643,46 +664,42 @@ def complex_transfer_function(
         v_front = vf if vf else 0.1
         alpha_r = driver.vas / vr
         alpha_f = driver.vas / v_front
-        h = (fb if fb else 40) / driver.fs
+        h = (fb if fb else 40.0) / driver.fs
         qts = driver.qts
-        ql = 7.0
         D = (
             wn**4
             + wn**3 * (h / qts + h / ql)
-            + wn**2 * (h**2 + 1 + alpha_r + alpha_f)
-            + wn * (h * (1 + alpha_r) / qts + h * (1 + alpha_r + alpha_f) / ql)
-            + h**2 * (1 + alpha_r)
+            + wn**2 * (h**2 + 1.0 + alpha_r + alpha_f + h / (qts * ql))
+            + wn * (h * (1.0 + alpha_r) / qts + h * (1.0 + alpha_r + alpha_f) / ql)
+            + h**2 * (1.0 + alpha_r)
         )
         return (wn**2 * alpha_f * h) / D
 
     elif box_type == "pr":
-        alpha = driver.vas / vb
+        alpha    = driver.vas / vb
         alpha_pr = (pr_vas if pr_vas else driver.vas) / vb
-        f_tuning = (fb if fb else 40)
-        h = f_tuning / driver.fs
-        hp = (pr_fs if pr_fs else 20) / driver.fs
-        qts = driver.qts
-        q_pr = pr_qms if pr_qms else 5.0
-        
+        f_tuning = fb if fb else 40.0
+        h        = f_tuning / driver.fs
+        qts      = driver.qts
+        q_pr     = pr_qms if pr_qms else 5.0
         D = (
             wn**4
             + wn**3 * (h / qts + h / q_pr)
-            + wn**2 * (h**2 + 1 + alpha + alpha_pr)
-            + wn * (h / qts + h * (1 + alpha) / q_pr)
+            + wn**2 * (h**2 + 1.0 + alpha + alpha_pr + h / (qts * q_pr))
+            + wn    * (h / qts + h * (1.0 + alpha + alpha_pr) / q_pr)
             + h**2
         )
-        return (wn**2 * (wn**2 + hp**2)) / D
+        return wn**4 / D
 
-    else: # Vented
-        ql = 7.0
+    else:  # vented
         alpha = driver.vas / vb
-        h = (fb if fb else 40) / driver.fs
+        h = (fb if fb else 40.0) / driver.fs
         qts = driver.qts
         D = (
             wn**4
             + wn**3 * (h / qts + h / ql)
-            + wn**2 * (h**2 + 1 + alpha)
-            + wn * (h / qts + h * (1 + alpha) / ql)
+            + wn**2 * (h**2 + 1.0 + alpha + h / (qts * ql))
+            + wn * (h / qts + h * (1.0 + alpha) / ql)
             + h**2
         )
         return wn**4 / D
@@ -703,18 +720,17 @@ def group_delay_array(
     Compute group delay vs frequency in milliseconds.
     Uses numerical differentiation of the phase response.
     """
-    df = 0.1 # Hz
-    
-    tf1 = complex_transfer_function(driver, vb, fb, freqs, box_type, vf, pr_fs, pr_vas, pr_qms)
+    df = 0.1
+
+    tf1 = complex_transfer_function(driver, vb, fb, freqs,      box_type, vf, pr_fs, pr_vas, pr_qms)
     tf2 = complex_transfer_function(driver, vb, fb, freqs + df, box_type, vf, pr_fs, pr_vas, pr_qms)
 
     phase1 = np.angle(tf1)
     phase2 = np.angle(tf2)
 
-    # Unwrap phase difference
-    dphi = np.unwrap(phase2 - phase1)
+    dphi   = np.unwrap(phase2 - phase1)
     domega = 2 * math.pi * df
-    gd_s = -dphi / domega
+    gd_s   = -dphi / domega
     return gd_s * 1000  # ms
 
 
@@ -743,23 +759,21 @@ def port_length_for_tuning(
 
 def find_f3(freqs: np.ndarray, spl: np.ndarray) -> float:
     """
-    Find the -3dB frequency relative to the passband average or peak.
+    Find the -3 dB frequency relative to the passband average.
     """
-    if len(spl) == 0: return 0.0
-    # Use passband average (around 150-200Hz) as reference if possible
+    if len(spl) == 0:
+        return 0.0
     mask = (freqs >= 150) & (freqs <= 250)
     if np.any(mask):
         ref = np.mean(spl[mask])
     else:
         ref = np.max(spl)
-    
+
     target = ref - 3.0
-    # Search from left to find first point that crosses target
     for i in range(len(spl) - 1):
-        if spl[i] < target <= spl[i+1]:
-            # Simple linear interpolation
-            f1, f2 = freqs[i], freqs[i+1]
-            s1, s2 = spl[i], spl[i+1]
+        if spl[i] < target <= spl[i + 1]:
+            f1, f2 = freqs[i], freqs[i + 1]
+            s1, s2 = spl[i],   spl[i + 1]
             return f1 + (f2 - f1) * (target - s1) / (s2 - s1)
     return 0.0
 
@@ -777,53 +791,48 @@ def port_air_velocity_array(
 ) -> np.ndarray:
     """
     Compute peak port air velocity vs frequency (m/s).
-    Uses a stable nodal solution with Ql damping.
     """
-    re = driver.re if driver.re > 0 else 8.0
-    v_peak = math.sqrt(2.0 * input_power * re)
+    re      = driver.re  if driver.re  > 0 else 8.0
+    v_peak  = math.sqrt(2.0 * input_power * re)
 
-    mms = driver.mms if driver.mms > 0 else estimate_mms(driver)
-    bl = driver.bl if driver.bl > 0 else estimate_bl(driver, mms)
+    mms     = driver.mms if driver.mms > 0 else estimate_mms(driver)
+    bl      = driver.bl  if driver.bl  > 0 else estimate_bl(driver, mms)
     rms_val = driver.rms if driver.rms > 0 else estimate_rms(driver, mms)
-    cms = driver.cms if driver.cms > 0 else estimate_cms(driver)
+    cms     = driver.cms if driver.cms > 0 else estimate_cms(driver)
 
-    kms = 1.0 / cms
-    kbox = RHO * C**2 * driver.sd**2 / vb
+    kms        = 1.0 / cms
+    kbox       = RHO * C**2 * driver.sd**2 / vb
     total_area = port_area * num_ports
-    ql = 7.0
+    ql         = 7.0
 
     velocities = np.zeros(len(freqs))
+
     for i, f in enumerate(freqs):
         omega = 2 * math.pi * f
-        if omega == 0: continue
-        
-        zm_driver_em = complex(rms_val + (bl**2/re), omega * mms - kms / omega)
-        
+        if omega == 0:
+            continue
+
+        zm_driver_em = complex(rms_val + (bl**2 / re), omega * mms - kms / omega)
+
         if box_type == "bp4":
-            k_rear = kbox
+            k_rear  = kbox
             v_front = vf if vf else 0.1
             k_front = RHO * C**2 * driver.sd**2 / v_front
-            m_port = k_front / (2 * math.pi * fb)**2
-            
+            m_port  = k_front / (2 * math.pi * fb)**2
             zm_rear = complex(0, -k_rear / omega)
             zm_f_chamber = complex(0, -k_front / omega)
-            # Front chamber loss
             r_front = ql * (2 * math.pi * fb) * m_port
             zm_f_chamber_loss = 1.0 / (1.0/zm_f_chamber + 1.0/r_front)
-            zm_f_port = complex(0, omega * m_port)
-            
-            zm_parallel = (zm_f_chamber_loss * zm_f_port) / (zm_f_chamber_loss + zm_f_port)
+            zm_f_port    = complex(0, omega * m_port)
+            zm_parallel  = (zm_f_chamber_loss * zm_f_port) / (zm_f_chamber_loss + zm_f_port)
             u_cone = (v_peak * bl / re) / abs(zm_driver_em + zm_rear + zm_parallel)
-            # Volume velocity ratio in front chamber
             u_port = u_cone * abs(zm_f_chamber_loss / (zm_f_chamber_loss + zm_f_port))
         else:
-            m_port = kbox / (2 * math.pi * fb)**2
-            zm_box = complex(0, -kbox / omega)
-            # Box loss
-            r_box = ql * (2 * math.pi * fb) * m_port
+            m_port      = kbox / (2 * math.pi * fb)**2
+            zm_box      = complex(0, -kbox / omega)
+            r_box       = ql * (2 * math.pi * fb) * m_port
             zm_box_loss = 1.0 / (1.0/zm_box + 1.0/r_box)
-            zm_port = complex(0, omega * m_port)
-            
+            zm_port     = complex(0, omega * m_port)
             zm_parallel = (zm_box_loss * zm_port) / (zm_box_loss + zm_port)
             u_cone = (v_peak * bl / re) / abs(zm_driver_em + zm_parallel)
             u_port = u_cone * abs(zm_box_loss / (zm_box_loss + zm_port))
@@ -844,10 +853,9 @@ def pr_excursion_array(
     """
     Compute Passive Radiator excursion (mm) based on driver excursion.
     """
-    # X_pr = X_cone * (Sd_cone / Sd_pr) * (1 / |1 - (f/fb)^2|)
-    ratio_sd = driver.sd / pr_sd
+    ratio_sd      = driver.sd / pr_sd
     freq_ratio_sq = (freqs / fb)**2
-    transfer = 1.0 / np.abs(1.0 - freq_ratio_sq + 1e-6)
+    transfer      = 1.0 / np.abs(1.0 - freq_ratio_sq + 1e-6)
     return cone_excursion * ratio_sd * transfer
 
 
@@ -882,11 +890,11 @@ def recommended_vb_range(driver: Driver) -> Dict:
         "box_type_recommendation": box_rec,
         "sealed": {
             "optimal_litres": vb_sealed_opt * 1000,
-            "min_litres": vb_sealed_min * 1000,
-            "max_litres": vb_sealed_max * 1000,
+            "min_litres":     vb_sealed_min * 1000,
+            "max_litres":     vb_sealed_max * 1000,
         },
         "vented": {
             "optimal_litres": vb_vented_opt * 1000,
-            "optimal_fb_hz": fb_opt,
+            "optimal_fb_hz":  fb_opt,
         },
     }
