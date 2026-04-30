@@ -30,6 +30,7 @@ class CollapsibleSection(QWidget):
         self._layout.setContentsMargins(0, 0, 0, 0)
         self._layout.setSpacing(0)
 
+        # Header toggle button
         self._toggle = QPushButton()
         self._toggle.setCheckable(True)
         self._toggle.setChecked(expanded)
@@ -50,9 +51,13 @@ class CollapsibleSection(QWidget):
         self._toggle.clicked.connect(self._on_toggle)
         self._layout.addWidget(self._toggle)
 
+        # Content container
         self._content: QWidget | None = None
 
+    # ── Public API ─────────────────────────────────────────────────────────
+
     def set_content(self, widget: QWidget) -> None:
+        """Set (or replace) the content widget."""
         if self._content is not None:
             self._layout.removeWidget(self._content)
             self._content.setParent(None)
@@ -65,15 +70,18 @@ class CollapsibleSection(QWidget):
         self._toggle.setChecked(expanded)
         if self._content:
             self._content.setVisible(expanded)
-        self._set_title(self._toggle.text().lstrip("▼ ").lstrip("▶ "))
+        self._set_title(self._toggle.text().lstrip("\u25bc ").lstrip("\u25b6 "))
+
+    # ── Internals ──────────────────────────────────────────────────────────
 
     def _set_title(self, title: str) -> None:
-        arrow = "▼" if self._expanded else "▶"
+        arrow = "\u25bc" if self._expanded else "\u25b6"
         self._toggle.setText(f"{arrow}  {title}")
 
     def _on_toggle(self, checked: bool) -> None:
         self._expanded = checked
         if self._content:
             self._content.setVisible(checked)
-        raw = self._toggle.text().lstrip("▼ ").lstrip("▶ ")
+        # Update arrow
+        raw = self._toggle.text().lstrip("\u25bc ").lstrip("\u25b6 ")
         self._set_title(raw)
