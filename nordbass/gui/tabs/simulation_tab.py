@@ -5,139 +5,107 @@ Supports both round and slot (rectangular) ports.
 """
 import math
 import numpy as np
-
-from PySide6.QtWidgets import (
-    QCheckBox,
-    QComboBox,
-    QDialog,
-    QDialogButtonBox,
-    QDoubleSpinBox,
-    QFormLayout,
-    QGridLayout,
-    QGroupBox,
-    QHBoxLayout,
-    QLabel,
-    QPushButton,
-    QRadioButton,
-    QScrollArea,
-    QSizePolicy,
-    QStackedWidget,
-    QVBoxLayout,
-    QWidget,
-    QFrame,
-)
-from PySide6.QtCore import Qt, QPoint
-from PySide6.QtGui import QCursor
-
+import matplotlib.ticker as ticker
+from matplotlib.figure import Figure
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qtagg import NavigationToolbar2QT as NavigationToolbar
-from matplotlib.figure import Figure
-import matplotlib.ticker as ticker
 
-from ..theme import get_theme
-from ..project_state import get_state
-from ..scale import s, sf, font_size
-from ..collapsible import CollapsibleSection
-from ...core.ts_box import (
-    cone_excursion_array,
-    port_air_velocity_array,
-    port_length_for_tuning,
-    sealed_alignment_volume,
-    sealed_params,
-    sealed_spl_array,
-    vented_alignment,
-    vented_params,
+from PyQt6.QtWidgets import (
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QDoubleSpinBox,
+    QPushButton, QComboBox, QScrollArea, QSizePolicy, QRadioButton,
+    QButtonGroup, QFormLayout, QDialog, QDialogButtonBox, QCheckBox,
+    QStackedWidget,
+)
+from PyQt6.QtCore import Qt, QThread, pyqtSignal
+from PyQt6.QtGui import QFont
+
+from nordbass.core.models import Driver
+from nordbass.core.enclosure import (
     vented_spl_array,
-    bandpass_4th_spl_array,
+    sealed_spl_array,
+    bandpass4_spl_array,
     passive_radiator_spl_array,
-    effective_driver_params,
-    impedance_array,
-    apply_room_gain,
-    find_f3,
-)
-from ...core.ports import (
-    round_port_area,
-    slot_port_area,
-    chuffing_velocity_limit,
-    compression_velocity_limit,
+    vented_port_velocity_array,
+    bandpass4_port_velocity_array,
     equivalent_diameter,
+    slot_port_area,
+    vented_impedance_array,
+    sealed_impedance_array,
+    bandpass4_impedance_array,
+    passive_radiator_impedance_array,
 )
-from ...core.units import litre_to_m3, m3_to_litre
-from ...data.database import list_drivers
+from nordbass.core.alignments import alignment_params
+from nordbass.gui.project_state import get_state
+from nordbass.gui.theme import get_theme
+from nordbass.gui.scale import s, sf, font_size
 
-FREQ_MIN   = 10.0
-FREQ_MAX   = 500.0
-FREQ_POINTS = 600
-
-FREQ_TICKS = [10, 15, 20, 30, 40, 50, 60, 80, 100, 150, 200, 300, 400, 500]
+FREQ_MIN  = 10
+FREQ_MAX  = 2000
+FREQ_TICKS = [10, 20, 30, 50, 80, 100, 150, 200, 300, 500, 800, 1000, 2000]
 
 _autofill_warned: bool = False
 
 
-def _logfreqs():
-    return np.logspace(math.log10(FREQ_MIN), math.log10(FREQ_MAX), FREQ_POINTS)
+# ── helpers ───────────────────────────────────────────────────────────────────
 
 
-# ---------------------------------------------------------------------------
 # Auto-fill warning dialog
-# ---------------------------------------------------------------------------
-
+# ─────────────────────────────────────────────────────────────────────────────
 class _AutoFillInfoDialog(QDialog):
+    """Explains what Auto-fill does and its caveats."""
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("About Auto-fill from Alignment")
+        self.setWindowTitle("Auto-fill — How it works")
         self.setMinimumWidth(s(420))
-        self.setWindowFlag(Qt.WindowType.WindowContextHelpButtonHint, False)
-
         layout = QVBoxLayout(self)
         layout.setSpacing(s(10))
 
-        title_row = QHBoxLayout()
-        icon_lbl = QLabel("\u26a0\ufe0f")
-        icon_lbl.setStyleSheet(f"font-size: {font_size(22)}; padding-right: 6px;")
-        icon_lbl.setAlignment(Qt.AlignmentFlag.AlignTop)
-        title_lbl = QLabel("<b>Auto-fill uses theoretical alignment formulas</b>")
-        title_lbl.setWordWrap(True)
-        title_row.addWidget(icon_lbl)
-        title_row.addWidget(title_lbl, stretch=1)
-        layout.addLayout(title_row)
+        title = QLabel("What does Auto-fill do?")
+        title.setFont(QFont("", font_size(13), QFont.Weight.Bold))
+        layout.addWidget(title)
 
         body = QLabel(
-            "This button calculates box volume and tuning frequency using "
-            "Small\u2019s classic alignment tables (QB3, B4, SC4, SBB4). "
-            "These are mathematically correct starting points \u2014 but they "
-            "<b>do not account for</b>:<br><br>"
-            "\u2022 &nbsp;Your available box space or port area<br>"
-            "\u2022 &nbsp;Manufacturer\u2019s real-world recommendations<br>"
-            "\u2022 &nbsp;Car cabin gain and room loading<br>"
-            "\u2022 &nbsp;Port chuffing limits at high power<br><br>"
-            "<b>For beginners:</b> Use the alignment result as a reference, "
-            "then check the port velocity graph \u2014 if the purple line crosses "
-            "the orange dashed line, your port is too small.<br><br>"
-            "<b>For all users:</b> Always verify against the manufacturer\u2019s "
-            "recommended box specifications before building."
+            "Auto-fill calculates the ideal enclosure volume (Vb) and tuning "
+            "frequency (Fb) based on the selected alignment (e.g. Butterworth, "
+            "Bessel, Chebychev).\n\n"
+            "<b>When to use it:</b>\n"
+            "• You want a quick, theory-based starting point.\n"
+            "• You are unfamiliar with the driver's T/S parameters.\n\n"
+            "<b>Important caveats:</b>\n"
+            "• Alignment formulas assume ideal, linear driver behaviour.\n"
+            "• Real-world results may differ — always verify with measurements.\n"
+            "• The calculated values are a starting point, not a final design.\n"
+            "• Some alignments require a high Qtc driver to function correctly."
         )
         body.setWordWrap(True)
         body.setTextFormat(Qt.TextFormat.RichText)
-        body.setStyleSheet(f"font-size: {font_size(12)};")
         layout.addWidget(body)
-
-        self.chk_hide = QCheckBox("Don\u2019t show this again this session")
-        self.chk_hide.setStyleSheet(f"font-size: {font_size(11)}; color: gray;")
-        layout.addWidget(self.chk_hide)
 
         btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok)
         btns.accepted.connect(self.accept)
         layout.addWidget(btns)
 
-    @property
-    def suppress_future(self) -> bool:
-        return self.chk_hide.isChecked()
+
+# ── worker thread ─────────────────────────────────────────────────────────────
+
+class _SimWorker(QThread):
+    result_ready = pyqtSignal(object)
+    error        = pyqtSignal(str)
+
+    def __init__(self, fn, *args, **kwargs):
+        super().__init__()
+        self._fn   = fn
+        self._args = args
+        self._kw   = kwargs
+
+    def run(self):
+        try:
+            self.result_ready.emit(self._fn(*self._args, **self._kw))
+        except Exception as e:          # noqa: BLE001
+            self.error.emit(str(e))
 
 
-# ---------------------------------------------------------------------------
-# Plot canvas
-# ---------------------------------------------------------------------------
+# ── canvas ────────────────────────────────────────────────────────────────────
 
 class PlotCanvas(FigureCanvas):
     def __init__(self, parent=None):
@@ -238,8 +206,8 @@ class PlotCanvas(FigureCanvas):
         self.ax_imp.set_xlabel("Frequency (Hz)", fontsize=8, color=p["mpl_text"])
         self.line_spl, = self.ax_spl.plot([], [], color="#2196F3", linewidth=1.6)
         self.line_exc, = self.ax_exc.plot([], [], color="#4CAF50", linewidth=1.6, label="Driver Xpeak")
-        # PR excursion line — label only set when PR mode is active
-        self.line_pr_exc, = self.ax_exc.plot([], [], color="#FF9800", linewidth=1.2, linestyle="-.")
+        # PR excursion line — hidden from legend until PR mode is active
+        self.line_pr_exc, = self.ax_exc.plot([], [], color="#FF9800", linewidth=1.2, linestyle="-.", label="_nolegend_")
         self.line_vel, = self.ax_vel.plot([], [], color="#9C27B0", linewidth=1.6, label="Port Velocity")
         self.line_imp, = self.ax_imp.plot([], [], color="#FFD600", linewidth=1.6, label="Impedance")
         self.line_xmax = self.ax_exc.axhline(0, color="#F44336", linestyle="--", linewidth=1.2, visible=False)
@@ -278,50 +246,59 @@ class PlotCanvas(FigureCanvas):
 
         if impedance is not None:
             self.line_imp.set_data(freqs, impedance)
-            self.line_imp.set_visible(True)
-            self.ax_imp.set_ylim(0, max(np.max(impedance)*1.1, 10))
-        else:
-            self.line_imp.set_visible(False)
-        self.line_xmax.set_ydata([xmax_mm, xmax_mm])
-        self.line_xmax.set_visible(True)
-        self.line_xmax.set_label(f"Xmax {xmax_mm:.1f} mm")
-        if chuff_limit is not None:
-            self.line_chuff.set_data(freqs, chuff_limit)
+
+        # ── Chuff limit ────────────────────────────────────────────────────
+        if chuff_limit is not None and port_velocity is not None and box_type not in ("sealed", "pr"):
+            self.line_chuff.set_data(freqs, np.full_like(freqs, chuff_limit))
             self.line_chuff.set_visible(True)
         else:
+            self.line_chuff.set_data([], [])
             self.line_chuff.set_visible(False)
-        if comp_limit is not None:
-            self.line_comp.set_data(freqs, comp_limit)
+
+        # ── Compression limit ──────────────────────────────────────────────
+        if comp_limit is not None and port_velocity is not None and box_type not in ("sealed", "pr"):
+            self.line_comp.set_data(freqs, np.full_like(freqs, comp_limit))
             self.line_comp.set_visible(True)
         else:
+            self.line_comp.set_data([], [])
             self.line_comp.set_visible(False)
-        for l in self.line_fb:
-            l.remove()
-        self.line_fb = []
-        if fb:
-            for ax in (self.ax_spl, self.ax_exc, self.ax_vel, self.ax_imp):
-                l = ax.axvline(fb, color="#FF9800", linestyle=":", linewidth=1.2)
-                self.line_fb.append(l)
-            self.line_spl.set_label(f"SPL (Fb {fb:.1f} Hz)")
-        else:
-            self.line_spl.set_label("SPL")
+
+        # ── Comparison overlay ─────────────────────────────────────────────
         if self._comparison_data:
             cf, cs, ce, cv, ci = self._comparison_data
             self.line_comp_spl.set_data(cf, cs)
             self.line_comp_exc.set_data(cf, ce)
             if cv is not None:
                 self.line_comp_vel.set_data(cf, cv)
-                self.line_comp_vel.set_visible(True)
-            else:
-                self.line_comp_vel.set_visible(False)
             if ci is not None:
                 self.line_comp_imp.set_data(cf, ci)
-                self.line_comp_imp.set_visible(True)
-            else:
-                self.line_comp_imp.set_visible(False)
         else:
-            for l in (self.line_comp_spl, self.line_comp_exc, self.line_comp_vel, self.line_comp_imp):
-                l.set_visible(False)
+            for ln in (self.line_comp_spl, self.line_comp_exc,
+                       self.line_comp_vel, self.line_comp_imp):
+                ln.set_data([], [])
+
+        # ── Fb markers ────────────────────────────────────────────────────
+        for ln in self.line_fb:
+            try:
+                ln.remove()
+            except Exception:   # noqa: BLE001
+                pass
+        self.line_fb = []
+        if fb is not None:
+            p = get_theme().palette
+            kw_fb = {"color": p.get("mpl_fb", "#80CBC4"), "linestyle": ":",
+                     "linewidth": 1.2, "alpha": 0.8}
+            for ax in (self.ax_spl, self.ax_exc):
+                self.line_fb.append(ax.axvline(fb, **kw_fb))
+            if box_type not in ("sealed", "pr"):
+                self.line_fb.append(self.ax_vel.axvline(fb, **kw_fb))
+            self.line_fb.append(self.ax_imp.axvline(fb, **kw_fb))
+
+        # ── Xmax reference ────────────────────────────────────────────────
+        self.line_xmax.set_ydata([xmax_mm, xmax_mm])
+        self.line_xmax.set_visible(True)
+
+        # ── Axis limits ────────────────────────────────────────────────────
         s_max = np.nanmax(spl)
         self.ax_spl.set_ylim(max(s_max-40, 60), s_max+5)
         e_mask = (freqs >= 20)
@@ -348,204 +325,229 @@ class PlotCanvas(FigureCanvas):
 def _spinbox(mn, mx, val, suf, dec=0, step=None):
     sb = QDoubleSpinBox()
     sb.setRange(mn, mx); sb.setValue(val)
-    sb.setSuffix(suf); sb.setDecimals(dec)
-    if step: sb.setSingleStep(step)
+    sb.setSuffix(suf)
+    sb.setDecimals(dec)
+    if step is not None:
+        sb.setSingleStep(step)
     return sb
 
 
-class SimulationTab(QWidget):
-    def __init__(self):
-        super().__init__()
-        main_layout = QHBoxLayout(self)
+# ── main tab ──────────────────────────────────────────────────────────────────
 
+class SimulationTab(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._workers = []
+        self._result_labels = {}
+        self._drivers = []
+        self._build_ui()
+
+    def _build_ui(self):
+        main_layout = QHBoxLayout(self)
+        main_layout.setContentsMargins(s(4), s(4), s(4), s(4))
+        main_layout.setSpacing(s(8))
+
+        # ── Left panel (scrollable controls) ─────────────────────────────
         left_scroll = QScrollArea()
         left_scroll.setWidgetResizable(True)
-        left_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
         left_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        left_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        left_scroll.verticalScrollBar().setStyleSheet(
-            "QScrollBar:vertical { width: 6px; } "
-            "QScrollBar::handle:vertical { border-radius: 3px; }"
-        )
-        left = QWidget()
-        left_layout = QVBoxLayout(left)
-        left_layout.setContentsMargins(4, 4, 4, 4)
-        left_layout.setSpacing(2)
-        left_scroll.setWidget(left)
-        left_scroll.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
+        left_scroll.setMinimumWidth(s(280))
+        left_scroll.setMaximumWidth(s(360))
 
-        sec_drv   = CollapsibleSection("Driver", expanded=True)
-        drv_inner = QWidget()
-        drv_form  = QFormLayout(drv_inner)
-        drv_form.setContentsMargins(0, 0, 0, 0)
+        left_widget = QWidget()
+        left_layout  = QVBoxLayout(left_widget)
+        left_layout.setContentsMargins(s(4), s(4), s(4), s(4))
+        left_layout.setSpacing(s(6))
+        left_scroll.setWidget(left_widget)
+
+        # Driver selector
+        drv_row = QHBoxLayout()
+        drv_row.setSpacing(s(4))
+        drv_lbl = QLabel("Driver:")
+        drv_lbl.setFont(QFont("", font_size(10), QFont.Weight.Medium))
         self.driver_combo = QComboBox()
-        self.btn_refresh  = QPushButton("Refresh")
-        self.btn_refresh.clicked.connect(self._load_drivers)
-        self.spin_drv_count = _spinbox(1, 16, 1, "")
-        self.combo_wiring   = QComboBox()
-        self.combo_wiring.addItems(["Series", "Parallel", "Isobaric"])
-        drv_form.addRow("Driver:", self.driver_combo)
-        drv_form.addRow("Count:", self.spin_drv_count)
-        drv_form.addRow("Wiring:", self.combo_wiring)
-        drv_form.addRow(self.btn_refresh)
-        sec_drv.set_content(drv_inner)
-        left_layout.addWidget(sec_drv)
+        self.driver_combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        drv_row.addWidget(drv_lbl)
+        drv_row.addWidget(self.driver_combo)
+        left_layout.addLayout(drv_row)
 
-        sec_type    = CollapsibleSection("Box Type", expanded=True)
-        type_inner  = QWidget()
-        type_layout = QGridLayout(type_inner)
-        type_layout.setContentsMargins(0, 0, 0, 0)
-        self.radio_sealed = QRadioButton("Sealed")
+        # Driver count + wiring
+        dcw_row = QHBoxLayout()
+        dcw_row.setSpacing(s(4))
+        self.spin_drv_count = _spinbox(1, 12, 1, " driver(s)", dec=0, step=1)
+        self.combo_wiring = QComboBox()
+        self.combo_wiring.addItems(["Series", "Parallel"])
+        dcw_row.addWidget(self.spin_drv_count)
+        dcw_row.addWidget(self.combo_wiring)
+        left_layout.addLayout(dcw_row)
+
+        # Box-type radio buttons
+        box_type_row = QHBoxLayout()
+        box_type_row.setSpacing(s(4))
         self.radio_vented = QRadioButton("Vented")
-        self.radio_bp4    = QRadioButton("BP 4th")
+        self.radio_sealed = QRadioButton("Sealed")
+        self.radio_bp4    = QRadioButton("BP4")
         self.radio_pr     = QRadioButton("PR")
         self.radio_vented.setChecked(True)
-        self.radio_sealed.toggled.connect(self._on_box_type_changed)
-        self.radio_bp4.toggled.connect(self._on_box_type_changed)
-        self.radio_pr.toggled.connect(self._on_box_type_changed)
-        type_layout.addWidget(self.radio_sealed, 0, 0)
-        type_layout.addWidget(self.radio_vented, 0, 1)
-        type_layout.addWidget(self.radio_bp4,    1, 0)
-        type_layout.addWidget(self.radio_pr,     1, 1)
-        sec_type.set_content(type_inner)
-        left_layout.addWidget(sec_type)
+        btn_grp = QButtonGroup(self)
+        for rb in (self.radio_vented, self.radio_sealed, self.radio_bp4, self.radio_pr):
+            btn_grp.addButton(rb)
+            box_type_row.addWidget(rb)
+        left_layout.addLayout(box_type_row)
 
-        sec_params  = CollapsibleSection("Box Parameters", expanded=True)
-        param_inner = QWidget()
-        self.param_form = QFormLayout(param_inner)
-        self.param_form.setContentsMargins(0, 0, 0, 0)
-        self.spin_volume     = _spinbox(1, 5000, 100, " L",  1)
-        self.spin_volume_rear = _spinbox(1, 5000, 50, " L (rear)", 1)
-        self.spin_fb         = _spinbox(10, 200,  30, " Hz", 1)
-        self.spin_power      = _spinbox(0.1, 10000, 100, " W", 0)
-        self.chk_room_gain   = QCheckBox("Simulate Room/Cabin Gain (40Hz)")
-        self.chk_room_gain.toggled.connect(self._calculate)
-        self.pr_widget = QWidget()
-        pr_form = QFormLayout(self.pr_widget)
-        pr_form.setContentsMargins(0, 0, 0, 0)
-        # FIX: dec=1 so users can type values like 18.6, 4.27 etc.
-        self.spin_pr_fs  = _spinbox(1,   200,  20,  " Hz (PR Fs)",  dec=1, step=0.1)
-        self.spin_pr_vas = _spinbox(1,  2000, 100,  " L (PR Vas)",  dec=1, step=0.5)
-        self.spin_pr_qms = _spinbox(0.1,  30,   5,  " (PR Qms)",    dec=2, step=0.01)
-        pr_form.addRow("PR Fs:",  self.spin_pr_fs)
-        pr_form.addRow("PR Vas:", self.spin_pr_vas)
-        pr_form.addRow("PR Qms:", self.spin_pr_qms)
+        # Core spinboxes
+        form = QFormLayout()
+        form.setSpacing(s(4))
+        self.spin_volume      = _spinbox(1,   500,  30,  " L",          dec=1, step=0.5)
+        self.spin_volume_rear = _spinbox(1,   500,  50,  " L (rear)",   dec=1, step=0.5)
+        self.spin_fb          = _spinbox(10,  200,  40,  " Hz",         dec=1, step=0.5)
+        self.spin_power       = _spinbox(1, 5000, 100,  " W",           dec=0, step=10)
+        form.addRow("Volume:",       self.spin_volume)
+        form.addRow("Rear Volume:",  self.spin_volume_rear)
+        form.addRow("Tuning (Fb):",  self.spin_fb)
+        form.addRow("Input Power:",  self.spin_power)
+        left_layout.addLayout(form)
+
+        # Alignment
+        align_row = QHBoxLayout()
+        align_row.setSpacing(s(4))
+        align_lbl = QLabel("Alignment:")
         self.combo_alignment = QComboBox()
-        _alignments = [
-            ("QB3",  "QB3 \u2014 Quasi-Butterworth 3rd order"),
-            ("B4",   "B4 \u2014 Butterworth 4th order"),
-            ("SC4",  "SC4 \u2014 Sub-Chebyshev 4th order"),
-            ("SBB4", "SBB4 \u2014 Super Butterworth Bass 4th order"),
-        ]
-        for text, tip in _alignments:
-            self.combo_alignment.addItem(text)
-            self.combo_alignment.setItemData(
-                self.combo_alignment.count() - 1, tip, Qt.ItemDataRole.ToolTipRole)
-        self.param_form.addRow("Net Volume:",    self.spin_volume)
-        self.param_form.addRow("Rear Volume:",   self.spin_volume_rear)
-        self.param_form.addRow("Tuning Fb:",     self.spin_fb)
-        self.param_form.addRow("Alignment:",     self.combo_alignment)
-        self.param_form.addRow(self.pr_widget)
-        self.param_form.addRow("Input power:",   self.spin_power)
-        self.param_form.addRow(self.chk_room_gain)
-        sec_params.set_content(param_inner)
-        left_layout.addWidget(sec_params)
-
-        sec_port  = CollapsibleSection("Port Configuration", expanded=True)
-        port_inner = QWidget()
-        port_form  = QFormLayout(port_inner)
-        port_form.setContentsMargins(0, 0, 0, 0)
-        self.combo_port_shape = QComboBox()
-        self.combo_port_shape.addItems(["Round", "Slot (rectangular)"])
-        self.combo_port_shape.currentIndexChanged.connect(self._on_port_shape_changed)
-        port_form.addRow("Shape:", self.combo_port_shape)
-        self.spin_port_count = _spinbox(1, 8, 1, "")
-        port_form.addRow("# Ports:", self.spin_port_count)
-        self.round_widget = QWidget()
-        rf = QFormLayout(self.round_widget)
-        rf.setContentsMargins(0, 0, 0, 0)
-        self.spin_port_diam = _spinbox(10, 500, 75, " mm")
-        rf.addRow("Diameter:", self.spin_port_diam)
-        self.slot_widget = QWidget()
-        sf_w = QFormLayout(self.slot_widget)
-        sf_w.setContentsMargins(0, 0, 0, 0)
-        self.spin_slot_w = _spinbox(10, 800, 100, " mm")
-        self.spin_slot_h = _spinbox(10, 800,  50, " mm")
-        self.lbl_eq_diam = QLabel("Eq. diam: \u2014")
-        self.lbl_eq_diam.setStyleSheet(f"color:gray;font-size:{font_size(11)}")
-        self.spin_slot_w.valueChanged.connect(self._update_eq_diam)
-        self.spin_slot_h.valueChanged.connect(self._update_eq_diam)
-        sf_w.addRow("Width:",  self.spin_slot_w)
-        sf_w.addRow("Height:", self.spin_slot_h)
-        sf_w.addRow(self.lbl_eq_diam)
-        self.port_stack = QStackedWidget()
-        self.port_stack.addWidget(self.round_widget)
-        self.port_stack.addWidget(self.slot_widget)
-        port_form.addRow(self.port_stack)
-        sec_port.set_content(port_inner)
-        left_layout.addWidget(sec_port)
+        self.combo_alignment.addItems(["Butterworth", "Bessel", "Chebychev", "Custom"])
+        align_row.addWidget(align_lbl)
+        align_row.addWidget(self.combo_alignment)
+        left_layout.addLayout(align_row)
 
         # Auto-fill button row with compact warning icon
         auto_row = QHBoxLayout()
         auto_row.setSpacing(s(4))
+
         self.btn_auto = QPushButton("\u2728  Auto-fill from alignment")
         self.btn_auto.setToolTip(
-            "<b>Auto-fill from Alignment</b><br><br>"
-            "Calculates a theoretical starting volume and tuning frequency "
-            "using Small\u2019s alignment tables (QB3, B4, SC4, SBB4).<br><br>"
-            "<b>\u26a0\ufe0f Important:</b> This is a math-only estimate. "
-            "It does <u>not</u> check port area, available space, or "
-            "manufacturer recommendations. Real drivers often need a larger "
-            "box and lower tuning than the alignment formula suggests.<br><br>"
-            "Always verify the port velocity graph and compare against "
-            "the driver manufacturer\u2019s box specifications."
+            "Calculates Vb and Fb from the selected alignment formula.\n"
+            "Click \u26a0 for important caveats."
+        )
+        self.btn_auto.setStyleSheet(
+            f"QPushButton {{ font-size: {font_size(10)}; padding: {s(4)}px {s(8)}px; }}"
         )
         self.btn_auto.clicked.connect(self._auto_fill)
 
         self.btn_warn = QPushButton("\u26a0")
         self.btn_warn.setFixedSize(s(26), s(26))
         self.btn_warn.setToolTip(
-            "<b>Starting point only</b><br>"
-            "Verify port velocity and check manufacturer specs before building.<br>"
-            "<i>Click for full details.</i>"
+            "Auto-fill uses theoretical alignment formulas.\n"
+            "Real results may differ — click for details."
         )
         self.btn_warn.setStyleSheet(
-            f"QPushButton {{ "
-            f"  color: #B8860B; font-size: {font_size(14)}; "
-            f"  background: transparent; border: none; padding: 0; "
+            f"QPushButton {{"
+            f"  font-size: {font_size(14)}; color: #FFA000;"
+            f"  background: transparent; border: 1px solid transparent;"
+            f"  border-radius: {s(4)}px; padding: 0;"
             f"}} "
-            f"QPushButton:hover {{ color: #DAA520; }}"
+            f"QPushButton:hover {{ border-color: #FFA000; }}"
         )
         self.btn_warn.setVisible(False)
         self.btn_warn.clicked.connect(self._show_warn_dialog)
 
         auto_row.addWidget(self.btn_auto, stretch=1)
         auto_row.addWidget(self.btn_warn)
-
-        self.btn_calc = QPushButton("  Calculate")
-        self.btn_calc.setStyleSheet(f"font-weight:bold;padding:{s(6)}px")
-        self.btn_calc.clicked.connect(self._calculate)
         left_layout.addLayout(auto_row)
+
+        # Room gain
+        self.chk_room_gain = QCheckBox("Room gain correction")
+        left_layout.addWidget(self.chk_room_gain)
+
+        # Port section
+        port_lbl = QLabel("Port")
+        port_lbl.setFont(QFont("", font_size(10), QFont.Weight.Bold))
+        left_layout.addWidget(port_lbl)
+
+        port_form = QFormLayout()
+        port_form.setSpacing(s(4))
+
+        self.combo_port_shape = QComboBox()
+        self.combo_port_shape.addItems(["Round", "Slot"])
+        port_form.addRow("Shape:", self.combo_port_shape)
+
+        self.spin_port_count = _spinbox(1, 8, 1, " port(s)", dec=0, step=1)
+        port_form.addRow("Count:", self.spin_port_count)
+
+        self.port_stack = QStackedWidget()
+
+        round_w = QWidget()
+        round_form = QFormLayout(round_w)
+        round_form.setContentsMargins(0, 0, 0, 0)
+        self.spin_port_diam = _spinbox(10, 500, 100, " mm", dec=1, step=1)
+        round_form.addRow("Diameter:", self.spin_port_diam)
+
+        slot_w = QWidget()
+        slot_form = QFormLayout(slot_w)
+        slot_form.setContentsMargins(0, 0, 0, 0)
+        self.spin_slot_w = _spinbox(10, 1000, 100, " mm (W)", dec=1, step=1)
+        self.spin_slot_h = _spinbox(10, 1000,  50, " mm (H)", dec=1, step=1)
+        self.lbl_eq_diam = QLabel("Eq. diameter: --")
+        self.lbl_eq_diam.setStyleSheet(f"color: gray; font-size: {font_size(9)}px;")
+        slot_form.addRow("Width:",  self.spin_slot_w)
+        slot_form.addRow("Height:", self.spin_slot_h)
+        slot_form.addRow("",        self.lbl_eq_diam)
+
+        self.port_stack.addWidget(round_w)
+        self.port_stack.addWidget(slot_w)
+        port_form.addRow(self.port_stack)
+        left_layout.addLayout(port_form)
+        self.combo_port_shape.currentIndexChanged.connect(self._on_port_shape_changed)
+
+        # PR parameters
+        pr_lbl = QLabel("Passive Radiator")
+        pr_lbl.setFont(QFont("", font_size(10), QFont.Weight.Bold))
+        left_layout.addWidget(pr_lbl)
+        self.pr_widget = QWidget()
+        pr_form = QFormLayout(self.pr_widget)
+        pr_form.setSpacing(s(4))
+        self.spin_pr_fs  = _spinbox(1,   200,  20,  " Hz (PR Fs)",  dec=1, step=0.1)
+        self.spin_pr_vas = _spinbox(1,  2000, 100,  " L (PR Vas)",  dec=1, step=0.5)
+        self.spin_pr_qms = _spinbox(0.1,  30,   5,  " (PR Qms)",    dec=2, step=0.01)
+        pr_form.addRow("PR Fs:",  self.spin_pr_fs)
+        pr_form.addRow("PR Vas:", self.spin_pr_vas)
+        pr_form.addRow("PR Qms:", self.spin_pr_qms)
+        left_layout.addWidget(self.pr_widget)
+
+        # Calculate button
+        self.btn_calc = QPushButton("Calculate")
+        self.btn_calc.setStyleSheet(
+            f"QPushButton {{ font-size: {font_size(11)}; font-weight: bold; "
+            f"padding: {s(6)}px {s(12)}px; }}"
+        )
+        self.btn_calc.clicked.connect(self._calculate)
         left_layout.addWidget(self.btn_calc)
 
-        sec_results = CollapsibleSection("Results", expanded=True)
-        res_inner   = QWidget()
-        res_layout  = QGridLayout(res_inner)
-        res_layout.setContentsMargins(0, 0, 0, 0)
-        self._result_labels = {}
-        for i, key in enumerate(["F3", "Fb / Fc", "Qtc", "SPL 1W/1m", "EBP", "Port length"]):
+        # Results
+        res_lbl = QLabel("Results")
+        res_lbl.setFont(QFont("", font_size(10), QFont.Weight.Bold))
+        left_layout.addWidget(res_lbl)
+        res_form = QFormLayout()
+        res_form.setSpacing(s(3))
+        for key in (
+            "F3", "F6", "F10",
+            "Peak SPL", "Avg SPL (80-200 Hz)",
+            "Max excursion", "Port length",
+            "Peak port vel.", "Chuff limit",
+            "Impedance @ Fb",
+        ):
             lbl = QLabel("-")
-            lbl.setTextInteractionFlags(Qt.TextSelectableByMouse)
-            res_layout.addWidget(QLabel(key + ":"), i, 0)
-            res_layout.addWidget(lbl, i, 1)
+            res_form.addRow(f"{key}:", lbl)
             self._result_labels[key] = lbl
-        sec_results.set_content(res_inner)
-        left_layout.addWidget(sec_results)
+        left_layout.addLayout(res_form)
 
+        # Comparison controls
+        comp_lbl = QLabel("Comparison")
+        comp_lbl.setFont(QFont("", font_size(10), QFont.Weight.Bold))
+        left_layout.addWidget(comp_lbl)
         comp_box = QHBoxLayout()
-        self.btn_pin = QPushButton("Pin Comparison")
-        self.btn_clear_comp = QPushButton("Clear")
+        comp_box.setSpacing(s(4))
+        self.btn_pin = QPushButton("Pin current")
         self.btn_pin.clicked.connect(self._pin_comparison)
+        self.btn_clear_comp = QPushButton("Clear")
         self.btn_clear_comp.clicked.connect(self._clear_comparison)
         comp_box.addWidget(self.btn_pin)
         comp_box.addWidget(self.btn_clear_comp)
@@ -698,210 +700,224 @@ class SimulationTab(QWidget):
         pr     = self.radio_pr.isChecked()
         self.spin_fb.setEnabled(vented or bp4 or pr)
         self.combo_alignment.setEnabled(vented or bp4)
-        self.btn_auto.setEnabled(vented)
-        self.spin_volume_rear.setVisible(bp4)
-        if self.param_form:
-            lbl = self.param_form.labelForField(self.spin_volume_rear)
-            if lbl: lbl.setVisible(bp4)
+        self.spin_volume_rear.setEnabled(bp4)
+        self.spin_port_count.setEnabled(not sealed and not pr)
+        self.combo_port_shape.setEnabled(not sealed and not pr)
+        self.port_stack.setEnabled(not sealed and not pr)
         self.pr_widget.setVisible(pr)
-        for w in (self.spin_port_count, self.combo_port_shape,
-                  self.round_widget, self.slot_widget):
-            w.setEnabled(vented or bp4)
-        self._calculate()
+        self.btn_auto.setEnabled(vented)
+
+    # ── Driver management ─────────────────────────────────────────────────
 
     def _load_drivers(self):
-        self._drivers = list_drivers()
+        from nordbass.core.driver_store import load_drivers
+        prev_text = self.driver_combo.currentText()
+        self.driver_combo.blockSignals(True)
         self.driver_combo.clear()
+        self._drivers = load_drivers()
         for d in self._drivers:
-            self.driver_combo.addItem(
-                f"{d.name} ({d.manufacturer})" if d.manufacturer else d.name)
-        if not self._drivers:
-            self.driver_combo.addItem("- no drivers in database -")
-        st = get_state()
-        if st.driver_id:
-            for i, d in enumerate(self._drivers):
-                if d.id == st.driver_id:
-                    self.driver_combo.setCurrentIndex(i)
-                    break
+            label = f"{d.name} ({d.manufacturer})" if d.manufacturer else d.name
+            self.driver_combo.addItem(label)
+        idx = self.driver_combo.findText(prev_text)
+        if idx >= 0:
+            self.driver_combo.setCurrentIndex(idx)
+        self.driver_combo.blockSignals(False)
 
-    def _get_driver(self):
-        idx = self.driver_combo.currentIndex()
-        if idx < 0 or idx >= len(self._drivers):
-            return None
-        return self._drivers[idx]
+    def reload_drivers(self):
+        self._load_drivers()
+        self._calculate()
+
+    # ── Auto-fill ─────────────────────────────────────────────────────────
 
     def _auto_fill(self):
         global _autofill_warned
-        driver = self._get_driver()
-        if not driver:
+        if not self._drivers or self.driver_combo.currentIndex() < 0:
+            return
+        idx = self.driver_combo.currentIndex()
+        if idx >= len(self._drivers):
             return
         if not _autofill_warned:
             dlg = _AutoFillInfoDialog(self)
             dlg.exec()
-            if dlg.suppress_future:
-                _autofill_warned = True
-        vb, fb = vented_alignment(driver, self.combo_alignment.currentText())
-        self.spin_volume.setValue(m3_to_litre(vb))
-        self.spin_fb.setValue(round(fb, 1))
-        self.btn_warn.setVisible(True)
+            _autofill_warned = True
 
-    def _get_port_area_and_eq_diam(self):
-        if self.combo_port_shape.currentIndex() == 0:
-            d    = self.spin_port_diam.value() / 1000.0
-            area = round_port_area(d)
-            eq_d = d
-        else:
-            w    = self.spin_slot_w.value() / 1000.0
-            h    = self.spin_slot_h.value() / 1000.0
-            area = slot_port_area(w, h)
-            eq_d = equivalent_diameter(area)
-        return area, eq_d
+        driver = self._drivers[idx]
+        alignment = self.combo_alignment.currentText()
+        try:
+            vb, fb = alignment_params(driver, alignment)
+            self.spin_volume.setValue(vb)
+            self.spin_fb.setValue(fb)
+            self.btn_warn.setVisible(True)
+        except Exception as e:  # noqa: BLE001
+            from PyQt6.QtWidgets import QMessageBox
+            QMessageBox.warning(self, "Auto-fill failed", str(e))
+
+    # ── Pin / clear comparison ────────────────────────────────────────────
 
     def _pin_comparison(self):
-        if hasattr(self, "_last_run_data"):
-            self.canvas.set_comparison(*self._last_run_data)
-            self._calculate()
+        if self.canvas.line_spl is None:
+            return
+        freqs = self.canvas.line_spl.get_xdata()
+        spl   = self.canvas.line_spl.get_ydata()
+        exc   = self.canvas.line_exc.get_ydata()
+        vel   = self.canvas.line_vel.get_ydata() if self.canvas.line_vel else None
+        imp   = self.canvas.line_imp.get_ydata() if self.canvas.line_imp else None
+        self.canvas.set_comparison(freqs, spl, exc, vel, imp)
+        self._calculate()
 
     def _clear_comparison(self):
         self.canvas.clear_comparison()
         self._calculate()
 
+    # ── Calculate ─────────────────────────────────────────────────────────
+
     def _calculate(self):
-        base_driver = self._get_driver()
-        if not base_driver:
+        self._on_box_type_changed()
+        if not self._drivers or self.driver_combo.currentIndex() < 0:
             return
-        driver = effective_driver_params(
-            base_driver,
-            count=int(self.spin_drv_count.value()),
-            wiring=self.combo_wiring.currentText().lower()
-        )
-        freqs     = _logfreqs()
-        vb        = litre_to_m3(self.spin_volume.value())
-        power     = self.spin_power.value()
-        num_ports = int(self.spin_port_count.value())
-        port_area, eq_diam = self._get_port_area_and_eq_diam()
-        st = get_state()
-        st.driver_id   = base_driver.id
-        st.driver_name = f"{base_driver.name} ({base_driver.manufacturer})" if base_driver.manufacturer else base_driver.name
-        st.volume_l    = self.spin_volume.value()
-        if self.radio_sealed.isChecked(): st.box_type = "sealed"
-        elif self.radio_bp4.isChecked():  st.box_type = "bp4"
-        elif self.radio_pr.isChecked():   st.box_type = "pr"
-        else:                             st.box_type = "vented"
-        st.port.shape  = "round" if self.combo_port_shape.currentIndex() == 0 else "slot"
-        st.port.count  = int(self.spin_port_count.value())
+        idx = self.driver_combo.currentIndex()
+        if idx >= len(self._drivers):
+            return
+        driver  = self._drivers[idx]
+        self.collect_state()
+        st      = get_state()
+        vb      = st.volume_l
+        fb      = st.fb_hz
+        power   = st.input_power_w
+        n_drv   = st.driver_count
+        wiring  = st.driver_wiring
+        room    = st.room_gain
+        box     = st.box_type
+        n_ports = st.port.count
         if st.port.shape == "round":
-            st.port.diameter_mm = self.spin_port_diam.value()
-            st.port.eq_diam_m   = self.spin_port_diam.value() / 1000.0
+            port_area = math.pi * (st.port.diameter_mm / 2000.0) ** 2
         else:
-            st.port.slot_w_mm = self.spin_slot_w.value()
-            st.port.slot_h_mm = self.spin_slot_h.value()
-            st.port.eq_diam_m = eq_diam
-        ebp = driver.fs / driver.qes if driver.qes else 0
-        self._result_labels["EBP"].setText(f"{ebp:.1f}")
-        if driver.qes > 0:
-            eta_0 = (4 * math.pi**2 * driver.fs**3 * driver.vas) / (343.0**3 * driver.qes)
-            spl_1w1m = 10 * math.log10(max(eta_0, 1e-30)) + 112.1
-            self._result_labels["SPL 1W/1m"].setText(f"{spl_1w1m:.1f} dB")
-        else:
-            self._result_labels["SPL 1W/1m"].setText("-")
+            port_area = slot_port_area(st.port.slot_w_mm / 1000.0, st.port.slot_h_mm / 1000.0)
+        port_area *= n_ports
+        worker = _SimWorker(
+            self._run_sim,
+            driver, vb, fb, power, n_drv, wiring, room, box, port_area,
+            st.flare.pr_fs, st.flare.pr_vas, st.flare.pr_qms,
+        )
+        worker.result_ready.connect(self._on_result)
+        worker.error.connect(lambda msg: print(f"[sim error] {msg}"))
+        self._workers.append(worker)
+        worker.finished.connect(lambda: self._workers.remove(worker) if worker in self._workers else None)
+        worker.start()
 
-        if st.box_type == "sealed":
-            p   = sealed_params(driver, vb)
-            spl = sealed_spl_array(driver, vb, freqs, input_power=power)
-            if self.chk_room_gain.isChecked():
-                spl = apply_room_gain(freqs, spl, 40.0)
-            exc, xmax_mm = cone_excursion_array(driver, vb, None, freqs, power, "sealed")
-            imp = impedance_array(driver, vb, None, freqs, "sealed")
-            st.port.length_m = 0.0
-            st.fb_hz = 0.0
-            f3 = find_f3(freqs, spl)
-            self._result_labels["F3"].setText(f"{f3:.1f} Hz")
-            self._result_labels["Fb / Fc"].setText(f"Fc = {p['fc']:.1f} Hz")
-            self._result_labels["Qtc"].setText(f"{p['qtc']:.3f}")
-            self._result_labels["Port length"].setText("N/A (sealed)")
-            self._last_run_data = (freqs, spl, exc, None, imp)
-            self.canvas.plot(freqs, spl, exc, xmax_mm, impedance=imp, box_type="sealed")
+    @staticmethod
+    def _run_sim(driver, vb, fb, power, n_drv, wiring, room, box, port_area,
+                 pr_fs, pr_vas, pr_qms):
+        freqs = np.logspace(np.log10(FREQ_MIN), np.log10(FREQ_MAX), 300)
+        if box == "sealed":
+            spl = sealed_spl_array(driver, vb, freqs, n_drivers=n_drv,
+                                   wiring=wiring, room_gain=room, input_power=power)
+            imp = sealed_impedance_array(driver, vb, freqs)
+            exc = np.abs(np.array([driver.excursion_mm(f, vb, power) for f in freqs]))
+            xmax_mm = driver.xmax_mm
+            return ("sealed", freqs, spl, exc, xmax_mm, None, None, None, imp, None, None)
 
-        elif st.box_type == "bp4":
-            vr = litre_to_m3(self.spin_volume_rear.value())
-            vf = vb
-            fb = self.spin_fb.value()
-            spl = bandpass_4th_spl_array(driver, vr, vf, fb, freqs, input_power=power)
-            if self.chk_room_gain.isChecked():
-                spl = apply_room_gain(freqs, spl, 40.0)
-            exc, xmax_mm = cone_excursion_array(driver, vr, fb, freqs, power, "bp4", vf=vf)
-            port_vel = port_air_velocity_array(driver, vf, fb, port_area, num_ports, freqs, power, box_type="bp4")
-            imp = impedance_array(driver, vf, fb, freqs, "bp4")
-            port_len = port_length_for_tuning(fb, vf, port_area, num_ports)
-            st.port.length_m = port_len
-            st.fb_hz = fb
-            f3 = find_f3(freqs, spl)
-            self._result_labels["F3"].setText(f"{f3:.1f} Hz")
-            self._result_labels["Fb / Fc"].setText(f"Fb = {fb:.1f} Hz")
-            self._result_labels["Qtc"].setText("-")
-            if self.combo_port_shape.currentIndex() == 0:
-                port_desc = f"{port_len*1000:.0f} mm (\u00f8{eq_diam*1000:.0f} \u00d7 {num_ports})"
-            else:
-                port_desc = f"{port_len*1000:.0f} mm ({self.spin_slot_w.value():.0f}\u00d7{self.spin_slot_h.value():.0f} \u00d7 {num_ports})"
-            self._result_labels["Port length"].setText(port_desc)
-            self._last_run_data = (freqs, spl, exc, port_vel, imp)
-            self.canvas.plot(freqs, spl, exc, xmax_mm, port_velocity=port_vel, impedance=imp, fb=fb, box_type="bp4")
+        elif box == "bp4":
+            vb_rear = get_state().volume_rear
+            spl = bandpass4_spl_array(driver, vb, vb_rear, fb, freqs,
+                                      n_drivers=n_drv, wiring=wiring,
+                                      room_gain=room, input_power=power)
+            port_vel = bandpass4_port_velocity_array(driver, vb, vb_rear, fb, freqs,
+                                                     port_area=port_area, input_power=power)
+            imp = bandpass4_impedance_array(driver, vb, vb_rear, fb, freqs)
+            exc = np.abs(np.array([driver.excursion_mm(f, vb, power) for f in freqs]))
+            xmax_mm = driver.xmax_mm
+            chuff = driver.chuff_speed if hasattr(driver, "chuff_speed") else None
+            comp  = driver.comp_limit  if hasattr(driver, "comp_limit")  else None
+            return ("bp4", freqs, spl, exc, xmax_mm, port_vel, chuff, comp, imp, fb, None)
 
-        elif st.box_type == "pr":
-            pr_fs  = self.spin_pr_fs.value()
-            pr_vas = litre_to_m3(self.spin_pr_vas.value())
-            pr_qms = self.spin_pr_qms.value()
-            spl = passive_radiator_spl_array(driver, pr_fs, pr_vas, pr_qms, vb, freqs, input_power=power)
-            if self.chk_room_gain.isChecked():
-                spl = apply_room_gain(freqs, spl, 40.0)
-            fb_eff = pr_fs * math.sqrt(1 + pr_vas / vb)
-            exc, xmax_mm = cone_excursion_array(driver, vb, fb_eff, freqs, power, "pr")
-            imp = impedance_array(driver, vb, fb_eff, freqs, "pr")
-            from ...core.ts_box import pr_excursion_array
-            pr_exc = pr_excursion_array(driver, driver.sd, pr_qms, vb, fb_eff, freqs, exc)
-            f3 = find_f3(freqs, spl)
-            self._result_labels["F3"].setText(f"{f3:.1f} Hz")
-            self._result_labels["Fb / Fc"].setText(f"Fb = {fb_eff:.1f} Hz")
-            self._result_labels["Qtc"].setText("-")
-            self._result_labels["Port length"].setText("N/A (PR)")
-            self._last_run_data = (freqs, spl, exc, None, imp)
-            self.canvas.plot(freqs, spl, exc, xmax_mm, impedance=imp, fb=fb_eff, box_type="pr", pr_excursion=pr_exc)
+        elif box == "pr":
+            pr_fs_hz = pr_fs; pr_vas_l = pr_vas; pr_qms_val = pr_qms
+            spl, pr_exc = passive_radiator_spl_array(
+                driver, pr_fs_hz, pr_vas_l, pr_qms_val, vb, freqs, input_power=power
+            )
+            imp = passive_radiator_impedance_array(driver, vb, pr_fs_hz, pr_vas_l, pr_qms_val, freqs)
+            exc = np.abs(np.array([driver.excursion_mm(f, vb, power) for f in freqs]))
+            xmax_mm = driver.xmax_mm
+            fb_eff = math.sqrt(driver.fs_hz * pr_fs_hz)
+            return ("pr", freqs, spl, exc, xmax_mm, None, None, None, imp, fb_eff, pr_exc)
 
         else:  # vented
-            fb  = self.spin_fb.value()
-            spl = vented_spl_array(driver, vb, fb, freqs, input_power=power)
-            if self.chk_room_gain.isChecked():
-                spl = apply_room_gain(freqs, spl, 40.0)
-            exc, xmax_mm = cone_excursion_array(driver, vb, fb, freqs, power, "vented")
-            port_vel = port_air_velocity_array(
-                driver, vb, fb, port_area, num_ports, freqs, input_power=power, box_type="vented")
-            imp = impedance_array(driver, vb, fb, freqs, "vented")
-            chuff = np.array([chuffing_velocity_limit(eq_diam, f, masking=0.15) for f in freqs])
-            comp  = np.array([compression_velocity_limit(eq_diam, f) for f in freqs])
-            port_len = port_length_for_tuning(fb, vb, port_area, num_ports)
-            st.port.length_m = port_len
-            st.fb_hz         = fb
-            st.alignment     = self.combo_alignment.currentText()
-            f3 = find_f3(freqs, spl)
-            self._result_labels["F3"].setText(f"{f3:.1f} Hz")
-            self._result_labels["Fb / Fc"].setText(f"Fb = {fb:.1f} Hz")
-            self._result_labels["Qtc"].setText("-")
-            if self.combo_port_shape.currentIndex() == 0:
-                port_desc = (f"{port_len*1000:.0f} mm  (\u00f8{eq_diam*1000:.0f} \u00d7 {num_ports})")
-            else:
-                port_desc = (f"{port_len*1000:.0f} mm  ({self.spin_slot_w.value():.0f}\u00d7"
-                             f"{self.spin_slot_h.value():.0f} mm \u00d7 {num_ports})")
-            self._result_labels["Port length"].setText(port_desc)
-            self._last_run_data = (freqs, spl, exc, port_vel, imp)
-            self.canvas.plot(
-                freqs, spl, exc, xmax_mm,
-                port_velocity=port_vel,
-                chuff_limit=chuff,
-                comp_limit=comp,
-                impedance=imp,
-                fb=fb,
-                box_type="vented",
-            )
+            spl = vented_spl_array(driver, vb, fb, freqs, n_drivers=n_drv,
+                                   wiring=wiring, room_gain=room, input_power=power)
+            port_vel = vented_port_velocity_array(driver, vb, fb, freqs,
+                                                  port_area=port_area, input_power=power)
+            imp = vented_impedance_array(driver, vb, fb, freqs)
+            exc = np.abs(np.array([driver.excursion_mm(f, vb, power) for f in freqs]))
+            xmax_mm = driver.xmax_mm
+            chuff = driver.chuff_speed if hasattr(driver, "chuff_speed") else None
+            comp  = driver.comp_limit  if hasattr(driver, "comp_limit")  else None
+            return ("vented", freqs, spl, exc, xmax_mm, port_vel, chuff, comp, imp, fb, None)
 
-        st.notify()
+    def _on_result(self, result):
+        (box_type, freqs, spl, exc, xmax_mm,
+         port_vel, chuff, comp, imp, fb, pr_exc) = result
+
+        self.canvas.plot(
+            freqs, spl, exc, xmax_mm,
+            port_velocity=port_vel,
+            chuff_limit=chuff,
+            comp_limit=comp,
+            impedance=imp,
+            fb=fb,
+            box_type=box_type,
+            pr_excursion=pr_exc,
+        )
+
+        # ── Results panel ─────────────────────────────────────────────────
+        spl_interp = lambda f: float(np.interp(f, freqs, spl))
+        peak_spl   = float(np.nanmax(spl))
+        mask_80_200 = (freqs >= 80) & (freqs <= 200)
+        avg_spl    = float(np.mean(spl[mask_80_200])) if mask_80_200.any() else float("nan")
+
+        def _f_at(target_db):
+            ref = peak_spl + target_db
+            below = np.where(spl <= ref)[0]
+            if len(below) == 0:
+                return None
+            i = below[0]
+            if i == 0:
+                return freqs[0]
+            f1, f2 = freqs[i-1], freqs[i]
+            s1, s2 = spl[i-1], spl[i]
+            if s2 == s1:
+                return f1
+            return f1 + (ref - s1) * (f2 - f1) / (s2 - s1)
+
+        f3  = _f_at(-3)
+        f6  = _f_at(-6)
+        f10 = _f_at(-10)
+
+        def _fmt_f(val):
+            return f"{val:.1f} Hz" if val is not None else "-"
+
+        self._result_labels["F3"].setText(_fmt_f(f3))
+        self._result_labels["F6"].setText(_fmt_f(f6))
+        self._result_labels["F10"].setText(_fmt_f(f10))
+        self._result_labels["Peak SPL"].setText(f"{peak_spl:.1f} dB")
+        self._result_labels["Avg SPL (80-200 Hz)"].setText(f"{avg_spl:.1f} dB")
+        self._result_labels["Max excursion"].setText(f"{float(np.nanmax(exc)):.2f} mm")
+
+        if box_type == "pr":
+            self._result_labels["Port length"].setText("N/A (PR)")
+            self._result_labels["Peak port vel."].setText("N/A (PR)")
+            self._result_labels["Chuff limit"].setText("N/A (PR)")
+        elif box_type == "sealed":
+            self._result_labels["Port length"].setText("N/A (sealed)")
+            self._result_labels["Peak port vel."].setText("N/A (sealed)")
+            self._result_labels["Chuff limit"].setText("N/A (sealed)")
+        else:
+            self._result_labels["Port length"].setText("-")
+            if port_vel is not None:
+                self._result_labels["Peak port vel."].setText(f"{float(np.nanmax(port_vel)):.1f} m/s")
+            if chuff is not None:
+                self._result_labels["Chuff limit"].setText(f"{chuff:.1f} m/s")
+
+        if imp is not None and fb is not None:
+            imp_at_fb = float(np.interp(fb, freqs, imp))
+            self._result_labels["Impedance @ Fb"].setText(f"{imp_at_fb:.2f} \u03a9")
