@@ -118,7 +118,6 @@ class PlotCanvas(FigureCanvas):
         self._comparison_data = None
         self._bg = None
         self._apply_mpl_theme()
-        # line handles — set in _build_axes
         self.line_spl = self.line_exc = self.line_vel = self.line_imp = None
         self.line_xmax = self.line_chuff = self.line_comp = None
         self.line_pr_exc = None
@@ -209,28 +208,21 @@ class PlotCanvas(FigureCanvas):
                                               label="SPL")
         self.line_exc,     = self.ax_exc.plot([], [], color="#4CAF50", linewidth=1.6,
                                               label="Driver Xpeak")
-        # Xmax reference — labelled so it appears in the excursion legend
         self.line_xmax     = self.ax_exc.axhline(0, color="#F44336", linestyle="--",
                                                   linewidth=1.2, visible=False,
                                                   label="X\u2098\u2090\u2093 limit")
-        # PR excursion — hidden until PR mode; _nolegend_ until then
         self.line_pr_exc,  = self.ax_exc.plot([], [], color="#FF9800", linewidth=1.2,
                                                linestyle="-.", label="_nolegend_",
                                                visible=False)
-        # Port velocity
         self.line_vel,     = self.ax_vel.plot([], [], color="#9C27B0", linewidth=1.6,
                                               label="Port velocity")
-        # Chuffing limit — dashed orange, always labelled
         self.line_chuff,   = self.ax_vel.plot([], [], color="#FF5722", linestyle="--",
                                               linewidth=1.2, label="Chuff limit")
-        # Compression limit — dotted red, always labelled
         self.line_comp,    = self.ax_vel.plot([], [], color="#F44336", linestyle=":",
                                               linewidth=1.2, label="Compress. limit")
-        # Impedance
         self.line_imp,     = self.ax_imp.plot([], [], color="#FFD600", linewidth=1.6,
                                               label="Impedance")
 
-        # Comparison overlays (grey dashed, no legend entry)
         kw_comp = {"color": "gray", "alpha": 0.4, "linestyle": "--", "linewidth": 1.2,
                    "label": "_nolegend_"}
         self.line_comp_spl, = self.ax_spl.plot([], [], **kw_comp)
@@ -239,15 +231,15 @@ class PlotCanvas(FigureCanvas):
         self.line_comp_imp, = self.ax_imp.plot([], [], **kw_comp)
         self.line_fb = []
 
-    # ── legend helper ───────────────────────────────────────────────────────
+    # ── legend helper ────────────────────────────────────────────────────────
     @staticmethod
     def _refresh_legend(ax, loc="upper right"):
         """Re-draw legend showing only visible, labelled artists."""
         handles, labels = [], []
-        for artist in ax.get_lines() + ax.get_collections():
+        # ax.get_lines() returns Line2D objects; ax.collections is a list of Collection objects
+        for artist in list(ax.get_lines()) + list(ax.collections):
             lbl = artist.get_label()
             if lbl and not lbl.startswith("_") and artist.get_visible():
-                # skip lines with no data
                 try:
                     xd = artist.get_xdata()
                     if hasattr(xd, '__len__') and len(xd) == 0:
@@ -269,11 +261,9 @@ class PlotCanvas(FigureCanvas):
         self.line_spl.set_data(freqs, spl)
         self.line_exc.set_data(freqs, excursion)
 
-        # Xmax reference line
         self.line_xmax.set_ydata([xmax_mm, xmax_mm])
         self.line_xmax.set_visible(True)
 
-        # PR excursion — only shown and labelled in PR mode
         if pr_excursion is not None:
             self.line_pr_exc.set_data(freqs, pr_excursion)
             self.line_pr_exc.set_visible(True)
@@ -283,7 +273,6 @@ class PlotCanvas(FigureCanvas):
             self.line_pr_exc.set_visible(False)
             self.line_pr_exc.set_label("_nolegend_")
 
-        # Port velocity — only for vented / bp4
         if port_velocity is not None and box_type not in ("sealed", "pr"):
             self.line_vel.set_data(freqs, port_velocity)
             self.line_vel.set_visible(True)
@@ -291,7 +280,6 @@ class PlotCanvas(FigureCanvas):
             self.line_vel.set_data([], [])
             self.line_vel.set_visible(False)
 
-        # Chuffing limit
         if chuff_limit is not None and port_velocity is not None and box_type not in ("sealed", "pr"):
             self.line_chuff.set_data(freqs, np.full_like(freqs, chuff_limit))
             self.line_chuff.set_visible(True)
@@ -299,7 +287,6 @@ class PlotCanvas(FigureCanvas):
             self.line_chuff.set_data([], [])
             self.line_chuff.set_visible(False)
 
-        # Compression limit
         if comp_limit is not None and port_velocity is not None and box_type not in ("sealed", "pr"):
             self.line_comp.set_data(freqs, np.full_like(freqs, comp_limit))
             self.line_comp.set_visible(True)
@@ -307,7 +294,6 @@ class PlotCanvas(FigureCanvas):
             self.line_comp.set_data([], [])
             self.line_comp.set_visible(False)
 
-        # Impedance — always plot when available
         if impedance is not None:
             self.line_imp.set_data(freqs, impedance)
             self.line_imp.set_visible(True)
@@ -315,7 +301,6 @@ class PlotCanvas(FigureCanvas):
             self.line_imp.set_data([], [])
             self.line_imp.set_visible(False)
 
-        # Comparison overlays
         if self._comparison_data:
             cf, cs, ce, cv, ci = self._comparison_data
             self.line_comp_spl.set_data(cf, cs)
@@ -329,7 +314,6 @@ class PlotCanvas(FigureCanvas):
                        self.line_comp_vel, self.line_comp_imp):
                 ln.set_data([], [])
 
-        # Fb markers
         for ln in self.line_fb:
             try:
                 ln.remove()
@@ -346,7 +330,6 @@ class PlotCanvas(FigureCanvas):
                 self.line_fb.append(self.ax_vel.axvline(fb, **kw_fb))
             self.line_fb.append(self.ax_imp.axvline(fb, **kw_fb))
 
-        # Axis limits
         s_max = np.nanmax(spl)
         self.ax_spl.set_ylim(max(s_max - 40, 60), s_max + 5)
         e_mask = freqs >= 20
@@ -363,7 +346,6 @@ class PlotCanvas(FigureCanvas):
             i_max = np.nanmax(impedance[e_mask])
             self.ax_imp.set_ylim(0, i_max * 1.2)
 
-        # Refresh legends on all four axes
         self._refresh_legend(self.ax_spl, loc="lower right")
         self._refresh_legend(self.ax_exc, loc="upper right")
         self._refresh_legend(self.ax_vel, loc="upper right")
@@ -394,18 +376,15 @@ class SimulationTab(QWidget):
         self._build_ui()
 
     def _build_ui(self):
-        # Top-level layout holds only the splitter
         main_layout = QHBoxLayout(self)
         main_layout.setContentsMargins(s(4), s(4), s(4), s(4))
         main_layout.setSpacing(0)
 
-        # ── Splitter: left = controls, right = charts ──────────────────────
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.setHandleWidth(s(5))
         splitter.setChildrenCollapsible(False)
         main_layout.addWidget(splitter)
 
-        # ── Left panel (scrollable controls) ─────────────────────────────
         left_scroll = QScrollArea()
         left_scroll.setWidgetResizable(True)
         left_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
@@ -417,7 +396,6 @@ class SimulationTab(QWidget):
         left_layout.setSpacing(s(6))
         left_scroll.setWidget(left_widget)
 
-        # Driver selector
         drv_row = QHBoxLayout()
         drv_row.setSpacing(s(4))
         drv_lbl = QLabel("Driver:")
@@ -428,7 +406,6 @@ class SimulationTab(QWidget):
         drv_row.addWidget(self.driver_combo)
         left_layout.addLayout(drv_row)
 
-        # Driver count + wiring
         dcw_row = QHBoxLayout()
         dcw_row.setSpacing(s(4))
         self.spin_drv_count = _spinbox(1, 12, 1, " driver(s)", dec=0, step=1)
@@ -438,7 +415,6 @@ class SimulationTab(QWidget):
         dcw_row.addWidget(self.combo_wiring)
         left_layout.addLayout(dcw_row)
 
-        # Box-type radio buttons
         box_type_row = QHBoxLayout()
         box_type_row.setSpacing(s(4))
         self.radio_vented = QRadioButton("Vented")
@@ -452,7 +428,6 @@ class SimulationTab(QWidget):
             box_type_row.addWidget(rb)
         left_layout.addLayout(box_type_row)
 
-        # Core spinboxes
         form = QFormLayout()
         form.setSpacing(s(4))
         self.spin_volume      = _spinbox(1,   500,  30,  " L",         dec=1, step=0.5)
@@ -465,7 +440,6 @@ class SimulationTab(QWidget):
         form.addRow("Input Power:", self.spin_power)
         left_layout.addLayout(form)
 
-        # Alignment
         align_row = QHBoxLayout()
         align_row.setSpacing(s(4))
         align_lbl = QLabel("Alignment:")
@@ -475,7 +449,6 @@ class SimulationTab(QWidget):
         align_row.addWidget(self.combo_alignment)
         left_layout.addLayout(align_row)
 
-        # Auto-fill button row with compact warning icon
         auto_row = QHBoxLayout()
         auto_row.setSpacing(s(4))
         self.btn_auto = QPushButton("\u2728  Auto-fill from alignment")
@@ -507,11 +480,9 @@ class SimulationTab(QWidget):
         auto_row.addWidget(self.btn_warn)
         left_layout.addLayout(auto_row)
 
-        # Room gain
         self.chk_room_gain = QCheckBox("Room gain correction")
         left_layout.addWidget(self.chk_room_gain)
 
-        # Port section
         port_lbl = QLabel("Port")
         port_lbl.setFont(QFont("", font_pt(10), _W_BOLD))
         left_layout.addWidget(port_lbl)
@@ -544,7 +515,6 @@ class SimulationTab(QWidget):
         left_layout.addLayout(port_form)
         self.combo_port_shape.currentIndexChanged.connect(self._on_port_shape_changed)
 
-        # PR parameters
         pr_lbl = QLabel("Passive Radiator")
         pr_lbl.setFont(QFont("", font_pt(10), _W_BOLD))
         left_layout.addWidget(pr_lbl)
@@ -561,7 +531,6 @@ class SimulationTab(QWidget):
         pr_form.addRow("PR Sd:",  self.spin_pr_sd)
         left_layout.addWidget(self.pr_widget)
 
-        # Calculate button
         self.btn_calc = QPushButton("Calculate")
         self.btn_calc.setStyleSheet(
             f"QPushButton {{ font-size: {font_size(11)}; font-weight: bold; "
@@ -570,7 +539,6 @@ class SimulationTab(QWidget):
         self.btn_calc.clicked.connect(self._calculate)
         left_layout.addWidget(self.btn_calc)
 
-        # Results
         res_lbl = QLabel("Results")
         res_lbl.setFont(QFont("", font_pt(10), _W_BOLD))
         left_layout.addWidget(res_lbl)
@@ -588,7 +556,6 @@ class SimulationTab(QWidget):
             self._result_labels[key] = lbl
         left_layout.addLayout(res_form)
 
-        # Comparison controls
         comp_lbl = QLabel("Comparison")
         comp_lbl.setFont(QFont("", font_pt(10), _W_BOLD))
         left_layout.addWidget(comp_lbl)
@@ -605,7 +572,6 @@ class SimulationTab(QWidget):
 
         splitter.addWidget(left_scroll)
 
-        # ── Right panel: hamburger toggle + toolbar + canvas ──────────────
         right_panel = QWidget()
         right_layout = QVBoxLayout(right_panel)
         right_layout.setContentsMargins(0, 0, 0, 0)
@@ -637,11 +603,10 @@ class SimulationTab(QWidget):
         right_layout.addWidget(self.canvas, stretch=1)
 
         splitter.addWidget(right_panel)
-        splitter.setStretchFactor(0, 0)   # left: doesn't stretch
-        splitter.setStretchFactor(1, 1)   # right: takes all extra space
-        splitter.setSizes([s(300), 9999])  # initial sizes
+        splitter.setStretchFactor(0, 0)
+        splitter.setStretchFactor(1, 1)
+        splitter.setSizes([s(300), 9999])
 
-        # Wire signals
         for w in (self.spin_drv_count, self.spin_volume, self.spin_volume_rear,
                   self.spin_fb, self.spin_power, self.spin_port_count,
                   self.spin_port_diam, self.spin_slot_w, self.spin_slot_h,
