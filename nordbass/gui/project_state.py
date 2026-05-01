@@ -49,6 +49,10 @@ class FlareState:
     flare_mm:     float = 0.0
     masking:      float = 0.15
     target_vel:   float = 17.0
+    # Passive radiator parameters
+    pr_fs:        float = 20.0
+    pr_vas:       float = 100.0
+    pr_qms:       float = 5.0
 
 
 @dataclass
@@ -65,12 +69,13 @@ class ProjectState:
     # ── Simulation ────────────────────────────────────────────────────────
     box_type:   str   = "vented"
     volume_l:   float = 100.0
+    volume_rear: float = 50.0   # bandpass 4th-order rear chamber
     fb_hz:      float = 30.0
     alignment:  str   = "QB3"
     input_power_w: float = 100.0
     panel_thickness_mm: float = 18.0
-    
-    # New Multi-driver support
+
+    # Multi-driver support
     driver_count:  int  = 1
     driver_wiring: str  = "series"
     room_gain:     bool = False
@@ -117,7 +122,6 @@ class ProjectState:
                 }
             return obj
         d = _asdict(self)
-        # Remove non-serialisable callback list
         d.pop("_callbacks", None)
         return d
 
