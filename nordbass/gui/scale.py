@@ -2,13 +2,14 @@
 DPI-aware scaling helpers.
 
 Usage:
-    from .scale import s, sf, font_size, init_scale, screen_fraction
+    from .scale import s, sf, font_size, font_pt, init_scale, screen_fraction
 
-    init_scale(app)                       # call once after QApplication()
-    widget.setFixedSize(s(120), s(32))    # integer pixel sizes
-    Figure(figsize=(sf(5), sf(4)))        # float inch sizes
-    label.setStyleSheet(f"font-size:{font_size(11)}")
-    w, h = screen_fraction(0.80, 0.85)    # 80% of screen width, 85% of height
+    init_scale(app)                          # call once after QApplication()
+    widget.setFixedSize(s(120), s(32))       # integer pixel sizes
+    Figure(figsize=(sf(5), sf(4)))           # float inch sizes
+    label.setStyleSheet(f"font-size:{font_size(11)}")  # CSS string '13px'
+    label.setFont(QFont("", font_pt(10), w)) # plain int for QFont constructor
+    w, h = screen_fraction(0.80, 0.85)       # 80 % of screen width, 85 % of height
 """
 import sys
 from typing import Tuple
@@ -64,8 +65,13 @@ def sf(inches: float) -> float:
 
 
 def font_size(pt: int) -> str:
-    """Return a scaled CSS font-size string, e.g. '13px'."""
+    """Return a scaled CSS font-size string, e.g. '13px'.  Use in stylesheets."""
     return f"{s(pt)}px"
+
+
+def font_pt(pt: int) -> int:
+    """Return a scaled font size as a plain int (points).  Use with QFont()."""
+    return s(pt)
 
 
 def screen_fraction(w_frac: float, h_frac: float) -> Tuple[int, int]:

@@ -44,7 +44,7 @@ from nordbass.core.ports import (
 from nordbass.data.database import list_drivers
 from nordbass.gui.project_state import get_state
 from nordbass.gui.theme import get_theme
-from nordbass.gui.scale import s, sf, font_size
+from nordbass.gui.scale import s, sf, font_size, font_pt
 
 FREQ_MIN   = 10
 FREQ_MAX   = 2000
@@ -69,7 +69,7 @@ class _AutoFillInfoDialog(QDialog):
         layout.setSpacing(s(10))
 
         title = QLabel("What does Auto-fill do?")
-        title.setFont(QFont("", font_size(13), _W_BOLD))
+        title.setFont(QFont("", font_pt(13), _W_BOLD))
         layout.addWidget(title)
 
         body = QLabel(
@@ -112,7 +112,7 @@ class _SimWorker(QThread):
             self.error.emit(str(e))
 
 
-# ── Canvas ─────────────────────────────────────────────────────────────────────
+# ── Canvas ───────────────────────────────────────────────────────────────────
 
 class PlotCanvas(FigureCanvas):
     def __init__(self, parent=None):
@@ -377,7 +377,7 @@ class SimulationTab(QWidget):
         drv_row = QHBoxLayout()
         drv_row.setSpacing(s(4))
         drv_lbl = QLabel("Driver:")
-        drv_lbl.setFont(QFont("", font_size(10), _W_MEDIUM))
+        drv_lbl.setFont(QFont("", font_pt(10), _W_MEDIUM))
         self.driver_combo = QComboBox()
         self.driver_combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         drv_row.addWidget(drv_lbl)
@@ -441,7 +441,7 @@ class SimulationTab(QWidget):
             "Click \u26a0 for important caveats."
         )
         self.btn_auto.setStyleSheet(
-            f"QPushButton {{ font-size: {font_size(10)}px; padding: {s(4)}px {s(8)}px; }}"
+            f"QPushButton {{ font-size: {font_size(10)}; padding: {s(4)}px {s(8)}px; }}"
         )
         self.btn_auto.clicked.connect(self._auto_fill)
 
@@ -453,7 +453,7 @@ class SimulationTab(QWidget):
         )
         self.btn_warn.setStyleSheet(
             f"QPushButton {{"
-            f"  font-size: {font_size(14)}px; color: #FFA000;"
+            f"  font-size: {font_size(14)}; color: #FFA000;"
             f"  background: transparent; border: 1px solid transparent;"
             f"  border-radius: {s(4)}px; padding: 0;"
             f"}} "
@@ -472,7 +472,7 @@ class SimulationTab(QWidget):
 
         # Port section
         port_lbl = QLabel("Port")
-        port_lbl.setFont(QFont("", font_size(10), _W_BOLD))
+        port_lbl.setFont(QFont("", font_pt(10), _W_BOLD))
         left_layout.addWidget(port_lbl)
 
         port_form = QFormLayout()
@@ -499,7 +499,7 @@ class SimulationTab(QWidget):
         self.spin_slot_w = _spinbox(10, 1000, 100, " mm (W)", dec=1, step=1)
         self.spin_slot_h = _spinbox(10, 1000,  50, " mm (H)", dec=1, step=1)
         self.lbl_eq_diam = QLabel("Eq. diameter: --")
-        self.lbl_eq_diam.setStyleSheet(f"color: gray; font-size: {font_size(9)}px;")
+        self.lbl_eq_diam.setStyleSheet(f"color: gray; font-size: {font_size(9)};")
         slot_form.addRow("Width:",  self.spin_slot_w)
         slot_form.addRow("Height:", self.spin_slot_h)
         slot_form.addRow("",        self.lbl_eq_diam)
@@ -512,7 +512,7 @@ class SimulationTab(QWidget):
 
         # PR parameters
         pr_lbl = QLabel("Passive Radiator")
-        pr_lbl.setFont(QFont("", font_size(10), _W_BOLD))
+        pr_lbl.setFont(QFont("", font_pt(10), _W_BOLD))
         left_layout.addWidget(pr_lbl)
         self.pr_widget = QWidget()
         pr_form = QFormLayout(self.pr_widget)
@@ -530,7 +530,7 @@ class SimulationTab(QWidget):
         # Calculate button
         self.btn_calc = QPushButton("Calculate")
         self.btn_calc.setStyleSheet(
-            f"QPushButton {{ font-size: {font_size(11)}px; font-weight: bold; "
+            f"QPushButton {{ font-size: {font_size(11)}; font-weight: bold; "
             f"padding: {s(6)}px {s(12)}px; }}"
         )
         self.btn_calc.clicked.connect(self._calculate)
@@ -538,7 +538,7 @@ class SimulationTab(QWidget):
 
         # Results
         res_lbl = QLabel("Results")
-        res_lbl.setFont(QFont("", font_size(10), _W_BOLD))
+        res_lbl.setFont(QFont("", font_pt(10), _W_BOLD))
         left_layout.addWidget(res_lbl)
         res_form = QFormLayout()
         res_form.setSpacing(s(3))
@@ -556,7 +556,7 @@ class SimulationTab(QWidget):
 
         # Comparison controls
         comp_lbl = QLabel("Comparison")
-        comp_lbl.setFont(QFont("", font_size(10), _W_BOLD))
+        comp_lbl.setFont(QFont("", font_pt(10), _W_BOLD))
         left_layout.addWidget(comp_lbl)
         comp_box = QHBoxLayout()
         comp_box.setSpacing(s(4))
@@ -589,7 +589,7 @@ class SimulationTab(QWidget):
         self.btn_hamburger.setToolTip("Show / hide graph tools")
         self.btn_hamburger.setStyleSheet(
             f"QPushButton {{"
-            f"  font-size: {font_size(14)}px; background: transparent;"
+            f"  font-size: {font_size(14)}; background: transparent;"
             f"  border: 1px solid transparent; border-radius: {s(4)}px; padding: 0;"
             f"}} "
             f"QPushButton:hover {{ border-color: gray; }}"
