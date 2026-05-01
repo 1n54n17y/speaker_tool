@@ -50,6 +50,10 @@ FREQ_MIN   = 10
 FREQ_MAX   = 2000
 FREQ_TICKS = [10, 20, 30, 50, 80, 100, 150, 200, 300, 500, 800, 1000, 2000]
 
+# QFont weight constants as plain ints (PySide6 requires int, not Weight enum)
+_W_MEDIUM = QFont.Weight.Medium.value
+_W_BOLD   = QFont.Weight.Bold.value
+
 _autofill_warned: bool = False
 
 
@@ -59,13 +63,13 @@ class _AutoFillInfoDialog(QDialog):
     """Explains what Auto-fill does and its caveats."""
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Auto-fill — How it works")
+        self.setWindowTitle("Auto-fill \u2014 How it works")
         self.setMinimumWidth(s(420))
         layout = QVBoxLayout(self)
         layout.setSpacing(s(10))
 
         title = QLabel("What does Auto-fill do?")
-        title.setFont(QFont("", font_size(13), QFont.Weight.Bold))
+        title.setFont(QFont("", font_size(13), _W_BOLD))
         layout.addWidget(title)
 
         body = QLabel(
@@ -76,7 +80,7 @@ class _AutoFillInfoDialog(QDialog):
             "&bull; You are unfamiliar with the driver\u2019s T/S parameters.<br><br>"
             "<b>Important caveats:</b><br>"
             "&bull; Alignment formulas assume ideal, linear driver behaviour.<br>"
-            "&bull; Real-world results may differ — always verify with measurements.<br>"
+            "&bull; Real-world results may differ \u2014 always verify with measurements.<br>"
             "&bull; The calculated values are a starting point, not a final design.<br>"
             "&bull; Some alignments require a specific Qts range to function correctly."
         )
@@ -373,7 +377,7 @@ class SimulationTab(QWidget):
         drv_row = QHBoxLayout()
         drv_row.setSpacing(s(4))
         drv_lbl = QLabel("Driver:")
-        drv_lbl.setFont(QFont("", font_size(10), QFont.Weight.Medium))
+        drv_lbl.setFont(QFont("", font_size(10), _W_MEDIUM))
         self.driver_combo = QComboBox()
         self.driver_combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         drv_row.addWidget(drv_lbl)
@@ -468,7 +472,7 @@ class SimulationTab(QWidget):
 
         # Port section
         port_lbl = QLabel("Port")
-        port_lbl.setFont(QFont("", font_size(10), QFont.Weight.Bold))
+        port_lbl.setFont(QFont("", font_size(10), _W_BOLD))
         left_layout.addWidget(port_lbl)
 
         port_form = QFormLayout()
@@ -508,7 +512,7 @@ class SimulationTab(QWidget):
 
         # PR parameters
         pr_lbl = QLabel("Passive Radiator")
-        pr_lbl.setFont(QFont("", font_size(10), QFont.Weight.Bold))
+        pr_lbl.setFont(QFont("", font_size(10), _W_BOLD))
         left_layout.addWidget(pr_lbl)
         self.pr_widget = QWidget()
         pr_form = QFormLayout(self.pr_widget)
@@ -534,7 +538,7 @@ class SimulationTab(QWidget):
 
         # Results
         res_lbl = QLabel("Results")
-        res_lbl.setFont(QFont("", font_size(10), QFont.Weight.Bold))
+        res_lbl.setFont(QFont("", font_size(10), _W_BOLD))
         left_layout.addWidget(res_lbl)
         res_form = QFormLayout()
         res_form.setSpacing(s(3))
@@ -552,7 +556,7 @@ class SimulationTab(QWidget):
 
         # Comparison controls
         comp_lbl = QLabel("Comparison")
-        comp_lbl.setFont(QFont("", font_size(10), QFont.Weight.Bold))
+        comp_lbl.setFont(QFont("", font_size(10), _W_BOLD))
         left_layout.addWidget(comp_lbl)
         comp_box = QHBoxLayout()
         comp_box.setSpacing(s(4))
@@ -827,9 +831,7 @@ class SimulationTab(QWidget):
                  pr_fs, pr_vas, pr_qms, pr_sd):
         freqs = np.logspace(np.log10(FREQ_MIN), np.log10(FREQ_MAX), 300)
 
-        # Build effective driver (handles multi-driver scaling)
         eff = effective_driver_params(driver, n_drv, wiring)
-        total_port_area = single_area * n_ports
         xmax_mm = eff.xmax * 1000.0
 
         if box == "sealed":
@@ -852,7 +854,7 @@ class SimulationTab(QWidget):
                 eff, vb_rear, fb, freqs, input_power=power, box_type="bp4", vf=vb
             )
             imp = impedance_array(eff, vb_rear, fb, freqs, box_type="bp4")
-            eq_d = equivalent_diameter(single_area)
+            eq_d  = equivalent_diameter(single_area)
             chuff = chuffing_velocity_limit(eq_d, fb)
             comp  = compression_velocity_limit(eq_d, fb)
             return ("bp4", freqs, spl, exc, xmax_mm, port_vel, chuff, comp, imp, fb, None)
@@ -898,7 +900,6 @@ class SimulationTab(QWidget):
             pr_excursion=pr_exc,
         )
 
-        # Results panel
         peak_spl    = float(np.nanmax(spl))
         mask_80_200 = (freqs >= 80) & (freqs <= 200)
         avg_spl     = float(np.mean(spl[mask_80_200])) if mask_80_200.any() else float("nan")
