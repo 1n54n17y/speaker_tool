@@ -20,37 +20,41 @@ from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtGui import QFont
 
 from nordbass.core.models import Driver
-from nordbass.core.enclosure import (
-    vented_spl_array,
+from nordbass.core.ts_box import (
+    effective_driver_params,
     sealed_spl_array,
-    bandpass4_spl_array,
+    sealed_params,
+    vented_spl_array,
+    vented_alignment,
+    bandpass_4th_spl_array,
     passive_radiator_spl_array,
-    vented_port_velocity_array,
-    bandpass4_port_velocity_array,
+    port_air_velocity_array,
+    pr_excursion_array,
+    cone_excursion_array,
+    impedance_array,
+    apply_room_gain,
+    find_f3,
+)
+from nordbass.core.ports import (
     equivalent_diameter,
     slot_port_area,
-    vented_impedance_array,
-    sealed_impedance_array,
-    bandpass4_impedance_array,
-    passive_radiator_impedance_array,
+    chuffing_velocity_limit,
+    compression_velocity_limit,
 )
-from nordbass.core.alignments import alignment_params
+from nordbass.data.database import list_drivers
 from nordbass.gui.project_state import get_state
 from nordbass.gui.theme import get_theme
 from nordbass.gui.scale import s, sf, font_size
 
-FREQ_MIN  = 10
-FREQ_MAX  = 2000
+FREQ_MIN   = 10
+FREQ_MAX   = 2000
 FREQ_TICKS = [10, 20, 30, 50, 80, 100, 150, 200, 300, 500, 800, 1000, 2000]
 
 _autofill_warned: bool = False
 
 
-# ── helpers ───────────────────────────────────────────────────────────────────
+# ── Auto-fill warning dialog ───────────────────────────────────────────────────
 
-
-# Auto-fill warning dialog
-# ─────────────────────────────────────────────────────────────────────────────
 class _AutoFillInfoDialog(QDialog):
     """Explains what Auto-fill does and its caveats."""
     def __init__(self, parent=None):
@@ -66,16 +70,15 @@ class _AutoFillInfoDialog(QDialog):
 
         body = QLabel(
             "Auto-fill calculates the ideal enclosure volume (Vb) and tuning "
-            "frequency (Fb) based on the selected alignment (e.g. Butterworth, "
-            "Bessel, Chebychev).\n\n"
-            "<b>When to use it:</b>\n"
-            "• You want a quick, theory-based starting point.\n"
-            "• You are unfamiliar with the driver's T/S parameters.\n\n"
-            "<b>Important caveats:</b>\n"
-            "• Alignment formulas assume ideal, linear driver behaviour.\n"
-            "• Real-world results may differ — always verify with measurements.\n"
-            "• The calculated values are a starting point, not a final design.\n"
-            "• Some alignments require a high Qtc driver to function correctly."
+            "frequency (Fb) based on the selected alignment (e.g. QB3, SC4, B4).<br><br>"
+            "<b>When to use it:</b><br>"
+            "&bull; You want a quick, theory-based starting point.<br>"
+            "&bull; You are unfamiliar with the driver\u2019s T/S parameters.<br><br>"
+            "<b>Important caveats:</b><br>"
+            "&bull; Alignment formulas assume ideal, linear driver behaviour.<br>"
+            "&bull; Real-world results may differ — always verify with measurements.<br>"
+            "&bull; The calculated values are a starting point, not a final design.<br>"
+            "&bull; Some alignments require a specific Qts range to function correctly."
         )
         body.setWordWrap(True)
         body.setTextFormat(Qt.TextFormat.RichText)
@@ -86,7 +89,7 @@ class _AutoFillInfoDialog(QDialog):
         layout.addWidget(btns)
 
 
-# ── worker thread ─────────────────────────────────────────────────────────────
+# ── Worker thread ──────────────────────────────────────────────────────────────
 
 class _SimWorker(QThread):
     result_ready = Signal(object)
@@ -105,7 +108,7 @@ class _SimWorker(QThread):
             self.error.emit(str(e))
 
 
-# ── canvas ────────────────────────────────────────────────────────────────────
+# ── Canvas ─────────────────────────────────────────────────────────────────────
 
 class PlotCanvas(FigureCanvas):
     def __init__(self, parent=None):
@@ -204,15 +207,16 @@ class PlotCanvas(FigureCanvas):
         self.ax_imp.set_ylabel("Imp. (\u03a9)", fontsize=8, color=p["mpl_text"])
         self.ax_imp.set_title("Electrical Impedance", fontsize=9, color=p["mpl_text"])
         self.ax_imp.set_xlabel("Frequency (Hz)", fontsize=8, color=p["mpl_text"])
-        self.line_spl, = self.ax_spl.plot([], [], color="#2196F3", linewidth=1.6)
-        self.line_exc, = self.ax_exc.plot([], [], color="#4CAF50", linewidth=1.6, label="Driver Xpeak")
-        # PR excursion line — hidden from legend until PR mode is active
-        self.line_pr_exc, = self.ax_exc.plot([], [], color="#FF9800", linewidth=1.2, linestyle="-.", label="_nolegend_")
-        self.line_vel, = self.ax_vel.plot([], [], color="#9C27B0", linewidth=1.6, label="Port Velocity")
-        self.line_imp, = self.ax_imp.plot([], [], color="#FFD600", linewidth=1.6, label="Impedance")
-        self.line_xmax = self.ax_exc.axhline(0, color="#F44336", linestyle="--", linewidth=1.2, visible=False)
+        self.line_spl,  = self.ax_spl.plot([], [], color="#2196F3", linewidth=1.6)
+        self.line_exc,  = self.ax_exc.plot([], [], color="#4CAF50", linewidth=1.6, label="Driver Xpeak")
+        # PR excursion: initialised hidden; label suppressed until PR mode active
+        self.line_pr_exc, = self.ax_exc.plot([], [], color="#FF9800", linewidth=1.2,
+                                              linestyle="-.", label="_nolegend_", visible=False)
+        self.line_vel,  = self.ax_vel.plot([], [], color="#9C27B0", linewidth=1.6, label="Port Velocity")
+        self.line_imp,  = self.ax_imp.plot([], [], color="#FFD600", linewidth=1.6, label="Impedance")
+        self.line_xmax  = self.ax_exc.axhline(0, color="#F44336", linestyle="--", linewidth=1.2, visible=False)
         self.line_chuff, = self.ax_vel.plot([], [], color="#FF5722", linestyle="--", linewidth=1.2)
-        self.line_comp, = self.ax_vel.plot([], [], color="#F44336", linestyle=":", linewidth=1.2)
+        self.line_comp,  = self.ax_vel.plot([], [], color="#F44336", linestyle=":",  linewidth=1.2)
         kw_comp = {"color": "gray", "alpha": 0.4, "linestyle": "--", "linewidth": 1.2}
         self.line_comp_spl, = self.ax_spl.plot([], [], **kw_comp)
         self.line_comp_exc, = self.ax_exc.plot([], [], **kw_comp)
@@ -223,6 +227,7 @@ class PlotCanvas(FigureCanvas):
     def plot(self, freqs, spl, excursion, xmax_mm,
              port_velocity=None, chuff_limit=None, comp_limit=None,
              impedance=None, fb=None, box_type="vented", pr_excursion=None):
+
         self.line_spl.set_data(freqs, spl)
         self.line_exc.set_data(freqs, excursion)
 
@@ -236,7 +241,7 @@ class PlotCanvas(FigureCanvas):
             self.line_pr_exc.set_visible(False)
             self.line_pr_exc.set_label("_nolegend_")
 
-        # Port velocity — only shown for vented/bp4; always hidden for sealed/PR
+        # Port velocity — only shown for vented/bp4
         if port_velocity is not None and box_type not in ("sealed", "pr"):
             self.line_vel.set_data(freqs, port_velocity)
             self.line_vel.set_visible(True)
@@ -247,7 +252,7 @@ class PlotCanvas(FigureCanvas):
         if impedance is not None:
             self.line_imp.set_data(freqs, impedance)
 
-        # ── Chuff limit ────────────────────────────────────────────────────
+        # Chuff limit
         if chuff_limit is not None and port_velocity is not None and box_type not in ("sealed", "pr"):
             self.line_chuff.set_data(freqs, np.full_like(freqs, chuff_limit))
             self.line_chuff.set_visible(True)
@@ -255,7 +260,7 @@ class PlotCanvas(FigureCanvas):
             self.line_chuff.set_data([], [])
             self.line_chuff.set_visible(False)
 
-        # ── Compression limit ──────────────────────────────────────────────
+        # Compression limit
         if comp_limit is not None and port_velocity is not None and box_type not in ("sealed", "pr"):
             self.line_comp.set_data(freqs, np.full_like(freqs, comp_limit))
             self.line_comp.set_visible(True)
@@ -263,7 +268,7 @@ class PlotCanvas(FigureCanvas):
             self.line_comp.set_data([], [])
             self.line_comp.set_visible(False)
 
-        # ── Comparison overlay ─────────────────────────────────────────────
+        # Comparison overlay
         if self._comparison_data:
             cf, cs, ce, cv, ci = self._comparison_data
             self.line_comp_spl.set_data(cf, cs)
@@ -277,7 +282,7 @@ class PlotCanvas(FigureCanvas):
                        self.line_comp_vel, self.line_comp_imp):
                 ln.set_data([], [])
 
-        # ── Fb markers ────────────────────────────────────────────────────
+        # Fb markers
         for ln in self.line_fb:
             try:
                 ln.remove()
@@ -294,29 +299,32 @@ class PlotCanvas(FigureCanvas):
                 self.line_fb.append(self.ax_vel.axvline(fb, **kw_fb))
             self.line_fb.append(self.ax_imp.axvline(fb, **kw_fb))
 
-        # ── Xmax reference ────────────────────────────────────────────────
+        # Xmax reference
         self.line_xmax.set_ydata([xmax_mm, xmax_mm])
         self.line_xmax.set_visible(True)
 
-        # ── Axis limits ────────────────────────────────────────────────────
+        # Axis limits
         s_max = np.nanmax(spl)
-        self.ax_spl.set_ylim(max(s_max-40, 60), s_max+5)
-        e_mask = (freqs >= 20)
-        e_max = np.nanmax(excursion[e_mask])
+        self.ax_spl.set_ylim(max(s_max - 40, 60), s_max + 5)
+        e_mask = freqs >= 20
+        e_max  = np.nanmax(excursion[e_mask])
         if pr_excursion is not None:
             e_max = max(e_max, np.nanmax(pr_excursion[e_mask]))
-        self.ax_exc.set_ylim(0, max(e_max*1.2, xmax_mm*1.2))
+        self.ax_exc.set_ylim(0, max(e_max * 1.2, xmax_mm * 1.2))
         if port_velocity is not None and box_type not in ("sealed", "pr"):
             v_max = np.nanmax(port_velocity[e_mask])
-            self.ax_vel.set_ylim(0, max(v_max*1.2, 30))
+            self.ax_vel.set_ylim(0, max(v_max * 1.2, 30))
         else:
             self.ax_vel.set_ylim(0, 30)
+
         self.ax_spl.legend(fontsize=7, loc="lower right")
         self.ax_exc.legend(fontsize=7, loc="upper right")
         if port_velocity is not None and box_type not in ("sealed", "pr"):
             self.ax_vel.legend(fontsize=7, loc="upper right")
         else:
-            self.ax_vel.get_legend() and self.ax_vel.get_legend().remove()
+            leg = self.ax_vel.get_legend()
+            if leg:
+                leg.remove()
         if impedance is not None:
             self.ax_imp.legend(fontsize=7, loc="upper right")
         self.draw()
@@ -324,7 +332,8 @@ class PlotCanvas(FigureCanvas):
 
 def _spinbox(mn, mx, val, suf, dec=0, step=None):
     sb = QDoubleSpinBox()
-    sb.setRange(mn, mx); sb.setValue(val)
+    sb.setRange(mn, mx)
+    sb.setValue(val)
     sb.setSuffix(suf)
     sb.setDecimals(dec)
     if step is not None:
@@ -332,7 +341,7 @@ def _spinbox(mn, mx, val, suf, dec=0, step=None):
     return sb
 
 
-# ── main tab ──────────────────────────────────────────────────────────────────
+# ── Main tab ───────────────────────────────────────────────────────────────────
 
 class SimulationTab(QWidget):
     def __init__(self, parent=None):
@@ -398,14 +407,14 @@ class SimulationTab(QWidget):
         # Core spinboxes
         form = QFormLayout()
         form.setSpacing(s(4))
-        self.spin_volume      = _spinbox(1,   500,  30,  " L",          dec=1, step=0.5)
-        self.spin_volume_rear = _spinbox(1,   500,  50,  " L (rear)",   dec=1, step=0.5)
-        self.spin_fb          = _spinbox(10,  200,  40,  " Hz",         dec=1, step=0.5)
-        self.spin_power       = _spinbox(1, 5000, 100,  " W",           dec=0, step=10)
-        form.addRow("Volume:",       self.spin_volume)
-        form.addRow("Rear Volume:",  self.spin_volume_rear)
-        form.addRow("Tuning (Fb):",  self.spin_fb)
-        form.addRow("Input Power:",  self.spin_power)
+        self.spin_volume      = _spinbox(1,   500,  30,  " L",         dec=1, step=0.5)
+        self.spin_volume_rear = _spinbox(1,   500,  50,  " L (rear)",  dec=1, step=0.5)
+        self.spin_fb          = _spinbox(10,  200,  40,  " Hz",        dec=1, step=0.5)
+        self.spin_power       = _spinbox(1, 5000, 100,  " W",          dec=0, step=10)
+        form.addRow("Volume:",      self.spin_volume)
+        form.addRow("Rear Volume:", self.spin_volume_rear)
+        form.addRow("Tuning (Fb):", self.spin_fb)
+        form.addRow("Input Power:", self.spin_power)
         left_layout.addLayout(form)
 
         # Alignment
@@ -413,7 +422,7 @@ class SimulationTab(QWidget):
         align_row.setSpacing(s(4))
         align_lbl = QLabel("Alignment:")
         self.combo_alignment = QComboBox()
-        self.combo_alignment.addItems(["Butterworth", "Bessel", "Chebychev", "Custom"])
+        self.combo_alignment.addItems(["QB3", "B4", "SC4", "Butterworth"])
         align_row.addWidget(align_lbl)
         align_row.addWidget(self.combo_alignment)
         left_layout.addLayout(align_row)
@@ -428,7 +437,7 @@ class SimulationTab(QWidget):
             "Click \u26a0 for important caveats."
         )
         self.btn_auto.setStyleSheet(
-            f"QPushButton {{ font-size: {font_size(10)}; padding: {s(4)}px {s(8)}px; }}"
+            f"QPushButton {{ font-size: {font_size(10)}px; padding: {s(4)}px {s(8)}px; }}"
         )
         self.btn_auto.clicked.connect(self._auto_fill)
 
@@ -436,11 +445,11 @@ class SimulationTab(QWidget):
         self.btn_warn.setFixedSize(s(26), s(26))
         self.btn_warn.setToolTip(
             "Auto-fill uses theoretical alignment formulas.\n"
-            "Real results may differ — click for details."
+            "Real results may differ \u2014 click for details."
         )
         self.btn_warn.setStyleSheet(
             f"QPushButton {{"
-            f"  font-size: {font_size(14)}; color: #FFA000;"
+            f"  font-size: {font_size(14)}px; color: #FFA000;"
             f"  background: transparent; border: 1px solid transparent;"
             f"  border-radius: {s(4)}px; padding: 0;"
             f"}} "
@@ -507,15 +516,17 @@ class SimulationTab(QWidget):
         self.spin_pr_fs  = _spinbox(1,   200,  20,  " Hz (PR Fs)",  dec=1, step=0.1)
         self.spin_pr_vas = _spinbox(1,  2000, 100,  " L (PR Vas)",  dec=1, step=0.5)
         self.spin_pr_qms = _spinbox(0.1,  30,   5,  " (PR Qms)",    dec=2, step=0.01)
+        self.spin_pr_sd  = _spinbox(10, 10000, 200, " cm\u00b2 (PR Sd)", dec=1, step=1.0)
         pr_form.addRow("PR Fs:",  self.spin_pr_fs)
         pr_form.addRow("PR Vas:", self.spin_pr_vas)
         pr_form.addRow("PR Qms:", self.spin_pr_qms)
+        pr_form.addRow("PR Sd:",  self.spin_pr_sd)
         left_layout.addWidget(self.pr_widget)
 
         # Calculate button
         self.btn_calc = QPushButton("Calculate")
         self.btn_calc.setStyleSheet(
-            f"QPushButton {{ font-size: {font_size(11)}; font-weight: bold; "
+            f"QPushButton {{ font-size: {font_size(11)}px; font-weight: bold; "
             f"padding: {s(6)}px {s(12)}px; }}"
         )
         self.btn_calc.clicked.connect(self._calculate)
@@ -555,13 +566,13 @@ class SimulationTab(QWidget):
         left_layout.addStretch()
         main_layout.addWidget(left_scroll)
 
-        # Right panel: hamburger toggle + graph toolbar + canvas
+        # ── Right panel: hamburger toggle + toolbar + canvas ──────────────
         right_panel = QWidget()
         right_layout = QVBoxLayout(right_panel)
         right_layout.setContentsMargins(0, 0, 0, 0)
         right_layout.setSpacing(0)
 
-        self.canvas = PlotCanvas()
+        self.canvas  = PlotCanvas()
         self.toolbar = NavigationToolbar(self.canvas, self)
         self.toolbar.setStyleSheet("background-color: transparent; border: none;")
 
@@ -573,9 +584,9 @@ class SimulationTab(QWidget):
         self.btn_hamburger.setFixedSize(s(28), s(28))
         self.btn_hamburger.setToolTip("Show / hide graph tools")
         self.btn_hamburger.setStyleSheet(
-            f"QPushButton {{ "
-            f"  font-size: {font_size(14)}; background: transparent; "
-            f"  border: 1px solid transparent; border-radius: {s(4)}px; padding: 0; "
+            f"QPushButton {{"
+            f"  font-size: {font_size(14)}px; background: transparent;"
+            f"  border: 1px solid transparent; border-radius: {s(4)}px; padding: 0;"
             f"}} "
             f"QPushButton:hover {{ border-color: gray; }}"
         )
@@ -590,16 +601,19 @@ class SimulationTab(QWidget):
         right_layout.addWidget(self.canvas, stretch=1)
         main_layout.addWidget(right_panel, stretch=1)
 
+        # Wire signals
         for w in (self.spin_drv_count, self.spin_volume, self.spin_volume_rear,
                   self.spin_fb, self.spin_power, self.spin_port_count,
                   self.spin_port_diam, self.spin_slot_w, self.spin_slot_h,
-                  self.spin_pr_fs, self.spin_pr_vas, self.spin_pr_qms):
+                  self.spin_pr_fs, self.spin_pr_vas, self.spin_pr_qms, self.spin_pr_sd):
             w.valueChanged.connect(self._calculate)
-        for w in (self.driver_combo, self.combo_wiring, self.combo_alignment, self.combo_port_shape):
+        for w in (self.driver_combo, self.combo_wiring, self.combo_alignment,
+                  self.combo_port_shape):
             w.currentIndexChanged.connect(self._calculate)
         self.radio_sealed.toggled.connect(self._calculate)
         self.radio_bp4.toggled.connect(self._calculate)
         self.radio_pr.toggled.connect(self._calculate)
+        self.chk_room_gain.stateChanged.connect(self._calculate)
 
         self._drivers = []
         self._load_drivers()
@@ -609,8 +623,7 @@ class SimulationTab(QWidget):
     # ── Hamburger toggle ──────────────────────────────────────────────────
 
     def _toggle_toolbar(self):
-        visible = not self.toolbar.isVisible()
-        self.toolbar.setVisible(visible)
+        self.toolbar.setVisible(not self.toolbar.isVisible())
 
     # ── Warning icon helpers ──────────────────────────────────────────────
 
@@ -622,21 +635,14 @@ class SimulationTab(QWidget):
 
     def collect_state(self):
         st = get_state()
-        if self.radio_sealed.isChecked(): st.box_type = "sealed"
-        elif self.radio_bp4.isChecked():  st.box_type = "bp4"
-        elif self.radio_pr.isChecked():   st.box_type = "pr"
-        else:                             st.box_type = "vented"
+        if self.radio_sealed.isChecked():   st.box_type = "sealed"
+        elif self.radio_bp4.isChecked():    st.box_type = "bp4"
+        elif self.radio_pr.isChecked():     st.box_type = "pr"
+        else:                               st.box_type = "vented"
         st.volume_l      = self.spin_volume.value()
-        st.volume_rear   = self.spin_volume_rear.value()
         st.fb_hz         = self.spin_fb.value()
         st.input_power_w = self.spin_power.value()
         st.alignment     = self.combo_alignment.currentText()
-        st.driver_count  = int(self.spin_drv_count.value())
-        st.driver_wiring = self.combo_wiring.currentText().lower()
-        st.room_gain     = self.chk_room_gain.isChecked()
-        st.flare.pr_fs  = self.spin_pr_fs.value()
-        st.flare.pr_vas = self.spin_pr_vas.value()
-        st.flare.pr_qms = self.spin_pr_qms.value()
         st.port.shape    = "round" if self.combo_port_shape.currentIndex() == 0 else "slot"
         st.port.count    = int(self.spin_port_count.value())
         st.port.diameter_mm = self.spin_port_diam.value()
@@ -657,17 +663,8 @@ class SimulationTab(QWidget):
         elif st.box_type == "pr":      self.radio_pr.setChecked(True)
         else:                          self.radio_vented.setChecked(True)
         self.spin_volume.setValue(st.volume_l)
-        self.spin_volume_rear.setValue(getattr(st, "volume_rear", 50.0))
         self.spin_fb.setValue(st.fb_hz)
         self.spin_power.setValue(st.input_power_w)
-        self.spin_drv_count.setValue(st.driver_count)
-        self.chk_room_gain.setChecked(st.room_gain)
-        self.spin_pr_fs.setValue(getattr(st.flare, "pr_fs", 20.0))
-        self.spin_pr_vas.setValue(getattr(st.flare, "pr_vas", 100.0))
-        self.spin_pr_qms.setValue(getattr(st.flare, "pr_qms", 5.0))
-        idx_wiring = self.combo_wiring.findText(st.driver_wiring.capitalize())
-        if idx_wiring >= 0:
-            self.combo_wiring.setCurrentIndex(idx_wiring)
         idx = self.combo_alignment.findText(st.alignment)
         if idx >= 0:
             self.combo_alignment.setCurrentIndex(idx)
@@ -710,11 +707,13 @@ class SimulationTab(QWidget):
     # ── Driver management ─────────────────────────────────────────────────
 
     def _load_drivers(self):
-        from nordbass.core.driver_store import load_drivers
         prev_text = self.driver_combo.currentText()
         self.driver_combo.blockSignals(True)
         self.driver_combo.clear()
-        self._drivers = load_drivers()
+        try:
+            self._drivers = list_drivers()
+        except Exception:   # noqa: BLE001
+            self._drivers = []
         for d in self._drivers:
             label = f"{d.name} ({d.manufacturer})" if d.manufacturer else d.name
             self.driver_combo.addItem(label)
@@ -741,11 +740,12 @@ class SimulationTab(QWidget):
             dlg.exec()
             _autofill_warned = True
 
-        driver = self._drivers[idx]
+        driver    = self._drivers[idx]
         alignment = self.combo_alignment.currentText()
         try:
-            vb, fb = alignment_params(driver, alignment)
-            self.spin_volume.setValue(vb)
+            vb_m3, fb = vented_alignment(driver, alignment)
+            vb_l = vb_m3 * 1000.0
+            self.spin_volume.setValue(vb_l)
             self.spin_fb.setValue(fb)
             self.btn_warn.setVisible(True)
         except Exception as e:  # noqa: BLE001
@@ -778,80 +778,109 @@ class SimulationTab(QWidget):
         idx = self.driver_combo.currentIndex()
         if idx >= len(self._drivers):
             return
-        driver  = self._drivers[idx]
+        driver = self._drivers[idx]
         self.collect_state()
-        st      = get_state()
-        vb      = st.volume_l
-        fb      = st.fb_hz
-        power   = st.input_power_w
-        n_drv   = st.driver_count
-        wiring  = st.driver_wiring
-        room    = st.room_gain
+        st = get_state()
+
+        vb      = self.spin_volume.value() / 1000.0      # litres → m³
+        vb_rear = self.spin_volume_rear.value() / 1000.0
+        fb      = self.spin_fb.value()
+        power   = self.spin_power.value()
+        n_drv   = int(self.spin_drv_count.value())
+        wiring  = self.combo_wiring.currentText().lower()
+        room    = self.chk_room_gain.isChecked()
         box     = st.box_type
-        n_ports = st.port.count
+        n_ports = int(self.spin_port_count.value())
+
         if st.port.shape == "round":
-            port_area = math.pi * (st.port.diameter_mm / 2000.0) ** 2
+            single_area = math.pi * (st.port.diameter_mm / 2000.0) ** 2
         else:
-            port_area = slot_port_area(st.port.slot_w_mm / 1000.0, st.port.slot_h_mm / 1000.0)
-        port_area *= n_ports
+            single_area = slot_port_area(
+                st.port.slot_w_mm / 1000.0,
+                st.port.slot_h_mm / 1000.0,
+            )
+
+        pr_fs  = self.spin_pr_fs.value()
+        pr_vas = self.spin_pr_vas.value() / 1000.0   # litres → m³
+        pr_qms = self.spin_pr_qms.value()
+        pr_sd  = self.spin_pr_sd.value() / 10000.0   # cm² → m²
+
         worker = _SimWorker(
             self._run_sim,
-            driver, vb, fb, power, n_drv, wiring, room, box, port_area,
-            st.flare.pr_fs, st.flare.pr_vas, st.flare.pr_qms,
+            driver, vb, vb_rear, fb, power,
+            n_drv, wiring, room, box,
+            single_area, n_ports,
+            pr_fs, pr_vas, pr_qms, pr_sd,
         )
         worker.result_ready.connect(self._on_result)
         worker.error.connect(lambda msg: print(f"[sim error] {msg}"))
         self._workers.append(worker)
-        worker.finished.connect(lambda: self._workers.remove(worker) if worker in self._workers else None)
+        worker.finished.connect(
+            lambda: self._workers.remove(worker) if worker in self._workers else None
+        )
         worker.start()
 
     @staticmethod
-    def _run_sim(driver, vb, fb, power, n_drv, wiring, room, box, port_area,
-                 pr_fs, pr_vas, pr_qms):
+    def _run_sim(driver, vb, vb_rear, fb, power,
+                 n_drv, wiring, room, box,
+                 single_area, n_ports,
+                 pr_fs, pr_vas, pr_qms, pr_sd):
         freqs = np.logspace(np.log10(FREQ_MIN), np.log10(FREQ_MAX), 300)
+
+        # Build effective driver (handles multi-driver scaling)
+        eff = effective_driver_params(driver, n_drv, wiring)
+        total_port_area = single_area * n_ports
+        xmax_mm = eff.xmax * 1000.0
+
         if box == "sealed":
-            spl = sealed_spl_array(driver, vb, freqs, n_drivers=n_drv,
-                                   wiring=wiring, room_gain=room, input_power=power)
-            imp = sealed_impedance_array(driver, vb, freqs)
-            exc = np.abs(np.array([driver.excursion_mm(f, vb, power) for f in freqs]))
-            xmax_mm = driver.xmax_mm
+            spl = sealed_spl_array(eff, vb, freqs, input_power=power)
+            if room:
+                spl = apply_room_gain(freqs, spl)
+            exc, _ = cone_excursion_array(eff, vb, None, freqs, input_power=power, box_type="sealed")
+            imp = impedance_array(eff, vb, None, freqs, box_type="sealed")
             return ("sealed", freqs, spl, exc, xmax_mm, None, None, None, imp, None, None)
 
         elif box == "bp4":
-            vb_rear = get_state().volume_rear
-            spl = bandpass4_spl_array(driver, vb, vb_rear, fb, freqs,
-                                      n_drivers=n_drv, wiring=wiring,
-                                      room_gain=room, input_power=power)
-            port_vel = bandpass4_port_velocity_array(driver, vb, vb_rear, fb, freqs,
-                                                     port_area=port_area, input_power=power)
-            imp = bandpass4_impedance_array(driver, vb, vb_rear, fb, freqs)
-            exc = np.abs(np.array([driver.excursion_mm(f, vb, power) for f in freqs]))
-            xmax_mm = driver.xmax_mm
-            chuff = driver.chuff_speed if hasattr(driver, "chuff_speed") else None
-            comp  = driver.comp_limit  if hasattr(driver, "comp_limit")  else None
+            spl = bandpass_4th_spl_array(eff, vb_rear, vb, fb, freqs, input_power=power)
+            if room:
+                spl = apply_room_gain(freqs, spl)
+            port_vel = port_air_velocity_array(
+                eff, vb_rear, fb, single_area, n_ports, freqs,
+                input_power=power, box_type="bp4", vf=vb,
+            )
+            exc, _ = cone_excursion_array(
+                eff, vb_rear, fb, freqs, input_power=power, box_type="bp4", vf=vb
+            )
+            imp = impedance_array(eff, vb_rear, fb, freqs, box_type="bp4")
+            eq_d = equivalent_diameter(single_area)
+            chuff = chuffing_velocity_limit(eq_d, fb)
+            comp  = compression_velocity_limit(eq_d, fb)
             return ("bp4", freqs, spl, exc, xmax_mm, port_vel, chuff, comp, imp, fb, None)
 
         elif box == "pr":
-            pr_fs_hz = pr_fs; pr_vas_l = pr_vas; pr_qms_val = pr_qms
-            spl, pr_exc = passive_radiator_spl_array(
-                driver, pr_fs_hz, pr_vas_l, pr_qms_val, vb, freqs, input_power=power
+            spl = passive_radiator_spl_array(
+                eff, pr_fs, pr_vas, pr_qms, vb, freqs, input_power=power
             )
-            imp = passive_radiator_impedance_array(driver, vb, pr_fs_hz, pr_vas_l, pr_qms_val, freqs)
-            exc = np.abs(np.array([driver.excursion_mm(f, vb, power) for f in freqs]))
-            xmax_mm = driver.xmax_mm
-            fb_eff = math.sqrt(driver.fs_hz * pr_fs_hz)
+            if room:
+                spl = apply_room_gain(freqs, spl)
+            exc, _ = cone_excursion_array(eff, vb, None, freqs, input_power=power, box_type="sealed")
+            pr_exc = pr_excursion_array(eff, pr_sd, pr_qms, vb, pr_fs, freqs, exc)
+            imp = impedance_array(eff, vb, pr_fs, freqs, box_type="pr")
+            fb_eff = pr_fs * math.sqrt(1.0 + pr_vas / vb)
             return ("pr", freqs, spl, exc, xmax_mm, None, None, None, imp, fb_eff, pr_exc)
 
         else:  # vented
-            spl = vented_spl_array(driver, vb, fb, freqs, n_drivers=n_drv,
-                                   wiring=wiring, room_gain=room, input_power=power)
-            port_vel = vented_port_velocity_array(driver, vb, fb, freqs,
-                                                  port_area=port_area, input_power=power)
-            imp = vented_impedance_array(driver, vb, fb, freqs)
-            exc = np.abs(np.array([driver.excursion_mm(f, vb, power) for f in freqs]))
-            xmax_mm = driver.xmax_mm
-            chuff = driver.chuff_speed if hasattr(driver, "chuff_speed") else None
-            comp  = driver.comp_limit  if hasattr(driver, "comp_limit")  else None
+            spl = vented_spl_array(eff, vb, fb, freqs, input_power=power)
+            if room:
+                spl = apply_room_gain(freqs, spl)
+            port_vel = port_air_velocity_array(
+                eff, vb, fb, single_area, n_ports, freqs, input_power=power
+            )
+            exc, _ = cone_excursion_array(eff, vb, fb, freqs, input_power=power, box_type="vented")
+            imp = impedance_array(eff, vb, fb, freqs, box_type="vented")
+            eq_d  = equivalent_diameter(single_area)
+            chuff = chuffing_velocity_limit(eq_d, fb)
+            comp  = compression_velocity_limit(eq_d, fb)
             return ("vented", freqs, spl, exc, xmax_mm, port_vel, chuff, comp, imp, fb, None)
 
     def _on_result(self, result):
@@ -869,11 +898,10 @@ class SimulationTab(QWidget):
             pr_excursion=pr_exc,
         )
 
-        # ── Results panel ─────────────────────────────────────────────────
-        spl_interp = lambda f: float(np.interp(f, freqs, spl))
-        peak_spl   = float(np.nanmax(spl))
+        # Results panel
+        peak_spl    = float(np.nanmax(spl))
         mask_80_200 = (freqs >= 80) & (freqs <= 200)
-        avg_spl    = float(np.mean(spl[mask_80_200])) if mask_80_200.any() else float("nan")
+        avg_spl     = float(np.mean(spl[mask_80_200])) if mask_80_200.any() else float("nan")
 
         def _f_at(target_db):
             ref = peak_spl + target_db
@@ -883,38 +911,33 @@ class SimulationTab(QWidget):
             i = below[0]
             if i == 0:
                 return freqs[0]
-            f1, f2 = freqs[i-1], freqs[i]
-            s1, s2 = spl[i-1], spl[i]
+            f1, f2 = freqs[i - 1], freqs[i]
+            s1, s2 = spl[i - 1],   spl[i]
             if s2 == s1:
                 return f1
             return f1 + (ref - s1) * (f2 - f1) / (s2 - s1)
 
-        f3  = _f_at(-3)
-        f6  = _f_at(-6)
-        f10 = _f_at(-10)
-
         def _fmt_f(val):
             return f"{val:.1f} Hz" if val is not None else "-"
 
-        self._result_labels["F3"].setText(_fmt_f(f3))
-        self._result_labels["F6"].setText(_fmt_f(f6))
-        self._result_labels["F10"].setText(_fmt_f(f10))
+        self._result_labels["F3"].setText(_fmt_f(_f_at(-3)))
+        self._result_labels["F6"].setText(_fmt_f(_f_at(-6)))
+        self._result_labels["F10"].setText(_fmt_f(_f_at(-10)))
         self._result_labels["Peak SPL"].setText(f"{peak_spl:.1f} dB")
         self._result_labels["Avg SPL (80-200 Hz)"].setText(f"{avg_spl:.1f} dB")
         self._result_labels["Max excursion"].setText(f"{float(np.nanmax(exc)):.2f} mm")
 
-        if box_type == "pr":
-            self._result_labels["Port length"].setText("N/A (PR)")
-            self._result_labels["Peak port vel."].setText("N/A (PR)")
-            self._result_labels["Chuff limit"].setText("N/A (PR)")
-        elif box_type == "sealed":
-            self._result_labels["Port length"].setText("N/A (sealed)")
-            self._result_labels["Peak port vel."].setText("N/A (sealed)")
-            self._result_labels["Chuff limit"].setText("N/A (sealed)")
+        if box_type in ("pr", "sealed"):
+            suffix = "(PR)" if box_type == "pr" else "(sealed)"
+            self._result_labels["Port length"].setText(f"N/A {suffix}")
+            self._result_labels["Peak port vel."].setText(f"N/A {suffix}")
+            self._result_labels["Chuff limit"].setText(f"N/A {suffix}")
         else:
             self._result_labels["Port length"].setText("-")
             if port_vel is not None:
-                self._result_labels["Peak port vel."].setText(f"{float(np.nanmax(port_vel)):.1f} m/s")
+                self._result_labels["Peak port vel."].setText(
+                    f"{float(np.nanmax(port_vel)):.1f} m/s"
+                )
             if chuff is not None:
                 self._result_labels["Chuff limit"].setText(f"{chuff:.1f} m/s")
 
