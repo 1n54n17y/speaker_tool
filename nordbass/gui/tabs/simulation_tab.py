@@ -24,8 +24,10 @@ from PySide6.QtWidgets import (
     QStackedWidget,
     QVBoxLayout,
     QWidget,
+    QFrame,
 )
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QPoint
+from PySide6.QtGui import QCursor
 
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qtagg import NavigationToolbar2QT as NavigationToolbar
@@ -107,17 +109,17 @@ class _AutoFillInfoDialog(QDialog):
         # Body text
         body = QLabel(
             "This button calculates box volume and tuning frequency using "
-            "Small’s classic alignment tables (QB3, B4, SC4, SBB4). "
-            "These are mathematically correct starting points — but they "
+            "Small\u2019s classic alignment tables (QB3, B4, SC4, SBB4). "
+            "These are mathematically correct starting points \u2014 but they "
             "<b>do not account for</b>:<br><br>"
             "\u2022 &nbsp;Your available box space or port area<br>"
-            "\u2022 &nbsp;Manufacturer’s real-world recommendations<br>"
+            "\u2022 &nbsp;Manufacturer\u2019s real-world recommendations<br>"
             "\u2022 &nbsp;Car cabin gain and room loading<br>"
             "\u2022 &nbsp;Port chuffing limits at high power<br><br>"
             "<b>For beginners:</b> Use the alignment result as a reference, "
-            "then check the port velocity graph — if the purple line crosses "
+            "then check the port velocity graph \u2014 if the purple line crosses "
             "the orange dashed line, your port is too small.<br><br>"
-            "<b>For all users:</b> Always verify against the manufacturer’s "
+            "<b>For all users:</b> Always verify against the manufacturer\u2019s "
             "recommended box specifications before building."
         )
         body.setWordWrap(True)
@@ -243,7 +245,8 @@ class PlotCanvas(FigureCanvas):
         self.ax_imp.set_xlabel("Frequency (Hz)", fontsize=8, color=p["mpl_text"])
         self.line_spl, = self.ax_spl.plot([], [], color="#2196F3", linewidth=1.6)
         self.line_exc, = self.ax_exc.plot([], [], color="#4CAF50", linewidth=1.6, label="Driver Xpeak")
-        self.line_pr_exc, = self.ax_exc.plot([], [], color="#FF9800", linewidth=1.2, linestyle="-.", label="PR Xpeak")
+        # PR Xpeak line — no label here; label is added dynamically only when PR mode is active
+        self.line_pr_exc, = self.ax_exc.plot([], [], color="#FF9800", linewidth=1.2, linestyle="-.")
         self.line_vel, = self.ax_vel.plot([], [], color="#9C27B0", linewidth=1.6, label="Port Velocity")
         self.line_imp, = self.ax_imp.plot([], [], color="#FFD600", linewidth=1.6, label="Impedance")
         self.line_xmax = self.ax_exc.axhline(0, color="#F44336", linestyle="--", linewidth=1.2, visible=False)
@@ -264,8 +267,11 @@ class PlotCanvas(FigureCanvas):
         if pr_excursion is not None:
             self.line_pr_exc.set_data(freqs, pr_excursion)
             self.line_pr_exc.set_visible(True)
+            self.line_pr_exc.set_label("PR Xpeak")
         else:
+            self.line_pr_exc.set_data([], [])
             self.line_pr_exc.set_visible(False)
+            self.line_pr_exc.set_label("_nolegend_")
         if port_velocity is not None:
             self.line_vel.set_data(freqs, port_velocity)
             self.line_vel.set_visible(True)
@@ -475,7 +481,9 @@ class SimulationTab(QWidget):
         sec_port.set_content(port_inner)
         left_layout.addWidget(sec_port)
 
-        # --- Auto-fill button with warning ---
+        # --- Auto-fill button row with compact warning icon ---
+        auto_row = QHBoxLayout()
+        auto_row.setSpacing(s(4))
         self.btn_auto = QPushButton("\u2728  Auto-fill from alignment")
         self.btn_auto.setToolTip(
             "<b>Auto-fill from Alignment</b><br><br>"
@@ -490,23 +498,31 @@ class SimulationTab(QWidget):
         )
         self.btn_auto.clicked.connect(self._auto_fill)
 
-        # Persistent amber hint label below the button
-        self.lbl_autofill_hint = QLabel(
-            "\u26a0\ufe0f  Starting point only — verify port velocity and "
-            "check manufacturer specs before building."
+        # Small warning triangle button — hover shows tooltip, click opens full dialog
+        self.btn_warn = QPushButton("\u26a0")
+        self.btn_warn.setFixedSize(s(26), s(26))
+        self.btn_warn.setToolTip(
+            "<b>Starting point only</b><br>"
+            "Verify port velocity and check manufacturer specs before building.<br>"
+            "<i>Click for full details.</i>"
         )
-        self.lbl_autofill_hint.setWordWrap(True)
-        self.lbl_autofill_hint.setStyleSheet(
-            f"color: #B8860B; font-size: {font_size(10)}; "
-            f"padding: {s(3)}px {s(2)}px;"
+        self.btn_warn.setStyleSheet(
+            f"QPushButton {{ "
+            f"  color: #B8860B; font-size: {font_size(14)}; "
+            f"  background: transparent; border: none; padding: 0; "
+            f"}} "
+            f"QPushButton:hover {{ color: #DAA520; }}"
         )
-        self.lbl_autofill_hint.setVisible(False)  # shown after first use
+        self.btn_warn.setVisible(False)  # shown after first auto-fill use
+        self.btn_warn.clicked.connect(self._show_warn_dialog)
+
+        auto_row.addWidget(self.btn_auto, stretch=1)
+        auto_row.addWidget(self.btn_warn)
 
         self.btn_calc = QPushButton("  Calculate")
         self.btn_calc.setStyleSheet(f"font-weight:bold;padding:{s(6)}px")
         self.btn_calc.clicked.connect(self._calculate)
-        left_layout.addWidget(self.btn_auto)
-        left_layout.addWidget(self.lbl_autofill_hint)
+        left_layout.addLayout(auto_row)
         left_layout.addWidget(self.btn_calc)
 
         sec_results = CollapsibleSection("Results", expanded=True)
@@ -534,13 +550,39 @@ class SimulationTab(QWidget):
         left_layout.addStretch()
         main_layout.addWidget(left_scroll)
 
+        # --- Right panel: hamburger toggle + graph toolbar + canvas ---
         right_panel = QWidget()
         right_layout = QVBoxLayout(right_panel)
         right_layout.setContentsMargins(0, 0, 0, 0)
         right_layout.setSpacing(0)
+
         self.canvas = PlotCanvas()
         self.toolbar = NavigationToolbar(self.canvas, self)
         self.toolbar.setStyleSheet("background-color: transparent; border: none;")
+
+        # Hamburger button row — sits in the same position as the toolbar
+        toolbar_row = QHBoxLayout()
+        toolbar_row.setContentsMargins(s(2), 0, s(2), 0)
+        toolbar_row.setSpacing(0)
+
+        self.btn_hamburger = QPushButton("\u2630")  # ☰
+        self.btn_hamburger.setFixedSize(s(28), s(28))
+        self.btn_hamburger.setToolTip("Show / hide graph tools")
+        self.btn_hamburger.setStyleSheet(
+            f"QPushButton {{ "
+            f"  font-size: {font_size(14)}; background: transparent; "
+            f"  border: 1px solid transparent; border-radius: {s(4)}px; padding: 0; "
+            f"}} "
+            f"QPushButton:hover {{ border-color: gray; }}"
+        )
+        self.btn_hamburger.clicked.connect(self._toggle_toolbar)
+        toolbar_row.addWidget(self.btn_hamburger)
+        toolbar_row.addStretch()
+
+        # Toolbar starts hidden; hamburger reveals it
+        self.toolbar.setVisible(False)
+
+        right_layout.addLayout(toolbar_row)
         right_layout.addWidget(self.toolbar)
         right_layout.addWidget(self.canvas, stretch=1)
         main_layout.addWidget(right_panel, stretch=1)
@@ -560,6 +602,20 @@ class SimulationTab(QWidget):
         self._load_drivers()
         self._on_box_type_changed()
         self._on_port_shape_changed(0)
+
+    # ── Hamburger toggle ──────────────────────────────────────────────────
+
+    def _toggle_toolbar(self):
+        visible = not self.toolbar.isVisible()
+        self.toolbar.setVisible(visible)
+
+    # ── Warning icon helpers ──────────────────────────────────────────────
+
+    def _show_warn_dialog(self):
+        dlg = _AutoFillInfoDialog(self)
+        dlg.exec()
+
+    # ── State helpers ─────────────────────────────────────────────────────
 
     def collect_state(self):
         st = get_state()
@@ -690,8 +746,8 @@ class SimulationTab(QWidget):
         self.spin_volume.setValue(m3_to_litre(vb))
         self.spin_fb.setValue(round(fb, 1))
 
-        # Show the persistent hint label after first use
-        self.lbl_autofill_hint.setVisible(True)
+        # Reveal warning icon after first use
+        self.btn_warn.setVisible(True)
 
     def _get_port_area_and_eq_diam(self):
         if self.combo_port_shape.currentIndex() == 0:
