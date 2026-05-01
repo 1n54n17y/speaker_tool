@@ -10,14 +10,14 @@ from matplotlib.figure import Figure
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qtagg import NavigationToolbar2QT as NavigationToolbar
 
-from PyQt6.QtWidgets import (
+from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QDoubleSpinBox,
     QPushButton, QComboBox, QScrollArea, QSizePolicy, QRadioButton,
     QButtonGroup, QFormLayout, QDialog, QDialogButtonBox, QCheckBox,
     QStackedWidget,
 )
-from PyQt6.QtCore import Qt, QThread, pyqtSignal
-from PyQt6.QtGui import QFont
+from PySide6.QtCore import Qt, QThread, Signal
+from PySide6.QtGui import QFont
 
 from nordbass.core.models import Driver
 from nordbass.core.enclosure import (
@@ -89,8 +89,8 @@ class _AutoFillInfoDialog(QDialog):
 # ── worker thread ─────────────────────────────────────────────────────────────
 
 class _SimWorker(QThread):
-    result_ready = pyqtSignal(object)
-    error        = pyqtSignal(str)
+    result_ready = Signal(object)
+    error        = Signal(str)
 
     def __init__(self, fn, *args, **kwargs):
         super().__init__()
@@ -749,7 +749,7 @@ class SimulationTab(QWidget):
             self.spin_fb.setValue(fb)
             self.btn_warn.setVisible(True)
         except Exception as e:  # noqa: BLE001
-            from PyQt6.QtWidgets import QMessageBox
+            from PySide6.QtWidgets import QMessageBox
             QMessageBox.warning(self, "Auto-fill failed", str(e))
 
     # ── Pin / clear comparison ────────────────────────────────────────────
