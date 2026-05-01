@@ -9,6 +9,8 @@ import numpy as np
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
+    QDialog,
+    QDialogButtonBox,
     QDoubleSpinBox,
     QFormLayout,
     QGridLayout,
@@ -67,10 +69,80 @@ FREQ_POINTS = 600
 
 FREQ_TICKS = [10, 15, 20, 30, 40, 50, 60, 80, 100, 150, 200, 300, 400, 500]
 
+# Whether the auto-fill warning dialog has been shown this session
+_autofill_warned: bool = False
+
 
 def _logfreqs():
     return np.logspace(math.log10(FREQ_MIN), math.log10(FREQ_MAX), FREQ_POINTS)
 
+
+# ---------------------------------------------------------------------------
+# Auto-fill warning dialog
+# ---------------------------------------------------------------------------
+
+class _AutoFillInfoDialog(QDialog):
+    """One-time informational dialog shown before the first auto-fill."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("About Auto-fill from Alignment")
+        self.setMinimumWidth(s(420))
+        self.setWindowFlag(Qt.WindowType.WindowContextHelpButtonHint, False)
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(s(10))
+
+        # Icon + title row
+        title_row = QHBoxLayout()
+        icon_lbl = QLabel("\u26a0\ufe0f")
+        icon_lbl.setStyleSheet(f"font-size: {font_size(22)}; padding-right: 6px;")
+        icon_lbl.setAlignment(Qt.AlignmentFlag.AlignTop)
+        title_lbl = QLabel("<b>Auto-fill uses theoretical alignment formulas</b>")
+        title_lbl.setWordWrap(True)
+        title_row.addWidget(icon_lbl)
+        title_row.addWidget(title_lbl, stretch=1)
+        layout.addLayout(title_row)
+
+        # Body text
+        body = QLabel(
+            "This button calculates box volume and tuning frequency using "
+            "Small’s classic alignment tables (QB3, B4, SC4, SBB4). "
+            "These are mathematically correct starting points — but they "
+            "<b>do not account for</b>:<br><br>"
+            "\u2022 &nbsp;Your available box space or port area<br>"
+            "\u2022 &nbsp;Manufacturer’s real-world recommendations<br>"
+            "\u2022 &nbsp;Car cabin gain and room loading<br>"
+            "\u2022 &nbsp;Port chuffing limits at high power<br><br>"
+            "<b>For beginners:</b> Use the alignment result as a reference, "
+            "then check the port velocity graph — if the purple line crosses "
+            "the orange dashed line, your port is too small.<br><br>"
+            "<b>For all users:</b> Always verify against the manufacturer’s "
+            "recommended box specifications before building."
+        )
+        body.setWordWrap(True)
+        body.setTextFormat(Qt.TextFormat.RichText)
+        body.setStyleSheet(f"font-size: {font_size(12)};")
+        layout.addWidget(body)
+
+        # "Don't show again" checkbox
+        self.chk_hide = QCheckBox("Don\u2019t show this again this session")
+        self.chk_hide.setStyleSheet(f"font-size: {font_size(11)}; color: gray;")
+        layout.addWidget(self.chk_hide)
+
+        # OK button
+        btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok)
+        btns.accepted.connect(self.accept)
+        layout.addWidget(btns)
+
+    @property
+    def suppress_future(self) -> bool:
+        return self.chk_hide.isChecked()
+
+
+# ---------------------------------------------------------------------------
+# Plot canvas
+# ---------------------------------------------------------------------------
 
 class PlotCanvas(FigureCanvas):
     def __init__(self, parent=None):
@@ -166,7 +238,7 @@ class PlotCanvas(FigureCanvas):
         self.ax_exc.set_title("Cone Excursion", fontsize=9, color=p["mpl_text"])
         self.ax_vel.set_ylabel("Vel. (m/s)", fontsize=8, color=p["mpl_text"])
         self.ax_vel.set_title("Port Air Velocity", fontsize=9, color=p["mpl_text"])
-        self.ax_imp.set_ylabel("Imp. (Ω)", fontsize=8, color=p["mpl_text"])
+        self.ax_imp.set_ylabel("Imp. (\u03a9)", fontsize=8, color=p["mpl_text"])
         self.ax_imp.set_title("Electrical Impedance", fontsize=9, color=p["mpl_text"])
         self.ax_imp.set_xlabel("Frequency (Hz)", fontsize=8, color=p["mpl_text"])
         self.line_spl, = self.ax_spl.plot([], [], color="#2196F3", linewidth=1.6)
@@ -403,12 +475,38 @@ class SimulationTab(QWidget):
         sec_port.set_content(port_inner)
         left_layout.addWidget(sec_port)
 
-        self.btn_auto = QPushButton("Auto-fill from alignment")
+        # --- Auto-fill button with warning ---
+        self.btn_auto = QPushButton("\u2728  Auto-fill from alignment")
+        self.btn_auto.setToolTip(
+            "<b>Auto-fill from Alignment</b><br><br>"
+            "Calculates a theoretical starting volume and tuning frequency "
+            "using Small\u2019s alignment tables (QB3, B4, SC4, SBB4).<br><br>"
+            "<b>\u26a0\ufe0f Important:</b> This is a math-only estimate. "
+            "It does <u>not</u> check port area, available space, or "
+            "manufacturer recommendations. Real drivers often need a larger "
+            "box and lower tuning than the alignment formula suggests.<br><br>"
+            "Always verify the port velocity graph and compare against "
+            "the driver manufacturer\u2019s box specifications."
+        )
         self.btn_auto.clicked.connect(self._auto_fill)
+
+        # Persistent amber hint label below the button
+        self.lbl_autofill_hint = QLabel(
+            "\u26a0\ufe0f  Starting point only — verify port velocity and "
+            "check manufacturer specs before building."
+        )
+        self.lbl_autofill_hint.setWordWrap(True)
+        self.lbl_autofill_hint.setStyleSheet(
+            f"color: #B8860B; font-size: {font_size(10)}; "
+            f"padding: {s(3)}px {s(2)}px;"
+        )
+        self.lbl_autofill_hint.setVisible(False)  # shown after first use
+
         self.btn_calc = QPushButton("  Calculate")
         self.btn_calc.setStyleSheet(f"font-weight:bold;padding:{s(6)}px")
         self.btn_calc.clicked.connect(self._calculate)
         left_layout.addWidget(self.btn_auto)
+        left_layout.addWidget(self.lbl_autofill_hint)
         left_layout.addWidget(self.btn_calc)
 
         sec_results = CollapsibleSection("Results", expanded=True)
@@ -576,12 +674,24 @@ class SimulationTab(QWidget):
         return self._drivers[idx]
 
     def _auto_fill(self):
+        global _autofill_warned
         driver = self._get_driver()
         if not driver:
             return
+
+        # Show one-time info dialog if not yet suppressed this session
+        if not _autofill_warned:
+            dlg = _AutoFillInfoDialog(self)
+            dlg.exec()
+            if dlg.suppress_future:
+                _autofill_warned = True
+
         vb, fb = vented_alignment(driver, self.combo_alignment.currentText())
         self.spin_volume.setValue(m3_to_litre(vb))
         self.spin_fb.setValue(round(fb, 1))
+
+        # Show the persistent hint label after first use
+        self.lbl_autofill_hint.setVisible(True)
 
     def _get_port_area_and_eq_diam(self):
         if self.combo_port_shape.currentIndex() == 0:
