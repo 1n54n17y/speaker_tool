@@ -71,7 +71,6 @@ FREQ_POINTS = 600
 
 FREQ_TICKS = [10, 15, 20, 30, 40, 50, 60, 80, 100, 150, 200, 300, 400, 500]
 
-# Whether the auto-fill warning dialog has been shown this session
 _autofill_warned: bool = False
 
 
@@ -84,8 +83,6 @@ def _logfreqs():
 # ---------------------------------------------------------------------------
 
 class _AutoFillInfoDialog(QDialog):
-    """One-time informational dialog shown before the first auto-fill."""
-
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("About Auto-fill from Alignment")
@@ -95,7 +92,6 @@ class _AutoFillInfoDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.setSpacing(s(10))
 
-        # Icon + title row
         title_row = QHBoxLayout()
         icon_lbl = QLabel("\u26a0\ufe0f")
         icon_lbl.setStyleSheet(f"font-size: {font_size(22)}; padding-right: 6px;")
@@ -106,7 +102,6 @@ class _AutoFillInfoDialog(QDialog):
         title_row.addWidget(title_lbl, stretch=1)
         layout.addLayout(title_row)
 
-        # Body text
         body = QLabel(
             "This button calculates box volume and tuning frequency using "
             "Small\u2019s classic alignment tables (QB3, B4, SC4, SBB4). "
@@ -127,12 +122,10 @@ class _AutoFillInfoDialog(QDialog):
         body.setStyleSheet(f"font-size: {font_size(12)};")
         layout.addWidget(body)
 
-        # "Don't show again" checkbox
         self.chk_hide = QCheckBox("Don\u2019t show this again this session")
         self.chk_hide.setStyleSheet(f"font-size: {font_size(11)}; color: gray;")
         layout.addWidget(self.chk_hide)
 
-        # OK button
         btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok)
         btns.accepted.connect(self.accept)
         layout.addWidget(btns)
@@ -245,7 +238,7 @@ class PlotCanvas(FigureCanvas):
         self.ax_imp.set_xlabel("Frequency (Hz)", fontsize=8, color=p["mpl_text"])
         self.line_spl, = self.ax_spl.plot([], [], color="#2196F3", linewidth=1.6)
         self.line_exc, = self.ax_exc.plot([], [], color="#4CAF50", linewidth=1.6, label="Driver Xpeak")
-        # PR Xpeak line — no label here; label is added dynamically only when PR mode is active
+        # PR excursion line — label only set when PR mode is active
         self.line_pr_exc, = self.ax_exc.plot([], [], color="#FF9800", linewidth=1.2, linestyle="-.")
         self.line_vel, = self.ax_vel.plot([], [], color="#9C27B0", linewidth=1.6, label="Port Velocity")
         self.line_imp, = self.ax_imp.plot([], [], color="#FFD600", linewidth=1.6, label="Impedance")
@@ -264,6 +257,8 @@ class PlotCanvas(FigureCanvas):
              impedance=None, fb=None, box_type="vented", pr_excursion=None):
         self.line_spl.set_data(freqs, spl)
         self.line_exc.set_data(freqs, excursion)
+
+        # PR excursion — only shown and labelled in PR mode
         if pr_excursion is not None:
             self.line_pr_exc.set_data(freqs, pr_excursion)
             self.line_pr_exc.set_visible(True)
@@ -272,11 +267,15 @@ class PlotCanvas(FigureCanvas):
             self.line_pr_exc.set_data([], [])
             self.line_pr_exc.set_visible(False)
             self.line_pr_exc.set_label("_nolegend_")
-        if port_velocity is not None:
+
+        # Port velocity — only shown for vented/bp4; always hidden for sealed/PR
+        if port_velocity is not None and box_type not in ("sealed", "pr"):
             self.line_vel.set_data(freqs, port_velocity)
             self.line_vel.set_visible(True)
         else:
+            self.line_vel.set_data([], [])
             self.line_vel.set_visible(False)
+
         if impedance is not None:
             self.line_imp.set_data(freqs, impedance)
             self.line_imp.set_visible(True)
@@ -330,13 +329,17 @@ class PlotCanvas(FigureCanvas):
         if pr_excursion is not None:
             e_max = max(e_max, np.nanmax(pr_excursion[e_mask]))
         self.ax_exc.set_ylim(0, max(e_max*1.2, xmax_mm*1.2))
-        if port_velocity is not None:
+        if port_velocity is not None and box_type not in ("sealed", "pr"):
             v_max = np.nanmax(port_velocity[e_mask])
             self.ax_vel.set_ylim(0, max(v_max*1.2, 30))
+        else:
+            self.ax_vel.set_ylim(0, 30)
         self.ax_spl.legend(fontsize=7, loc="lower right")
         self.ax_exc.legend(fontsize=7, loc="upper right")
-        if port_velocity is not None:
+        if port_velocity is not None and box_type not in ("sealed", "pr"):
             self.ax_vel.legend(fontsize=7, loc="upper right")
+        else:
+            self.ax_vel.get_legend() and self.ax_vel.get_legend().remove()
         if impedance is not None:
             self.ax_imp.legend(fontsize=7, loc="upper right")
         self.draw()
@@ -420,18 +423,19 @@ class SimulationTab(QWidget):
         self.pr_widget = QWidget()
         pr_form = QFormLayout(self.pr_widget)
         pr_form.setContentsMargins(0, 0, 0, 0)
-        self.spin_pr_fs = _spinbox(1, 100, 20, " Hz (PR Fs)")
-        self.spin_pr_vas = _spinbox(1, 2000, 100, " L (PR Vas)")
-        self.spin_pr_qms = _spinbox(1, 20, 5, " (PR Qms)")
-        pr_form.addRow("PR Fs:", self.spin_pr_fs)
+        # FIX: dec=1 so users can type values like 18.6, 4.27 etc.
+        self.spin_pr_fs  = _spinbox(1,   200,  20,  " Hz (PR Fs)",  dec=1, step=0.1)
+        self.spin_pr_vas = _spinbox(1,  2000, 100,  " L (PR Vas)",  dec=1, step=0.5)
+        self.spin_pr_qms = _spinbox(0.1,  30,   5,  " (PR Qms)",    dec=2, step=0.01)
+        pr_form.addRow("PR Fs:",  self.spin_pr_fs)
         pr_form.addRow("PR Vas:", self.spin_pr_vas)
         pr_form.addRow("PR Qms:", self.spin_pr_qms)
         self.combo_alignment = QComboBox()
         _alignments = [
-            ("QB3",  "QB3 — Quasi-Butterworth 3rd order"),
-            ("B4",   "B4 — Butterworth 4th order"),
-            ("SC4",  "SC4 — Sub-Chebyshev 4th order"),
-            ("SBB4", "SBB4 — Super Butterworth Bass 4th order"),
+            ("QB3",  "QB3 \u2014 Quasi-Butterworth 3rd order"),
+            ("B4",   "B4 \u2014 Butterworth 4th order"),
+            ("SC4",  "SC4 \u2014 Sub-Chebyshev 4th order"),
+            ("SBB4", "SBB4 \u2014 Super Butterworth Bass 4th order"),
         ]
         for text, tip in _alignments:
             self.combo_alignment.addItem(text)
@@ -467,7 +471,7 @@ class SimulationTab(QWidget):
         sf_w.setContentsMargins(0, 0, 0, 0)
         self.spin_slot_w = _spinbox(10, 800, 100, " mm")
         self.spin_slot_h = _spinbox(10, 800,  50, " mm")
-        self.lbl_eq_diam = QLabel("Eq. diam: —")
+        self.lbl_eq_diam = QLabel("Eq. diam: \u2014")
         self.lbl_eq_diam.setStyleSheet(f"color:gray;font-size:{font_size(11)}")
         self.spin_slot_w.valueChanged.connect(self._update_eq_diam)
         self.spin_slot_h.valueChanged.connect(self._update_eq_diam)
@@ -481,7 +485,7 @@ class SimulationTab(QWidget):
         sec_port.set_content(port_inner)
         left_layout.addWidget(sec_port)
 
-        # --- Auto-fill button row with compact warning icon ---
+        # Auto-fill button row with compact warning icon
         auto_row = QHBoxLayout()
         auto_row.setSpacing(s(4))
         self.btn_auto = QPushButton("\u2728  Auto-fill from alignment")
@@ -498,7 +502,6 @@ class SimulationTab(QWidget):
         )
         self.btn_auto.clicked.connect(self._auto_fill)
 
-        # Small warning triangle button — hover shows tooltip, click opens full dialog
         self.btn_warn = QPushButton("\u26a0")
         self.btn_warn.setFixedSize(s(26), s(26))
         self.btn_warn.setToolTip(
@@ -513,7 +516,7 @@ class SimulationTab(QWidget):
             f"}} "
             f"QPushButton:hover {{ color: #DAA520; }}"
         )
-        self.btn_warn.setVisible(False)  # shown after first auto-fill use
+        self.btn_warn.setVisible(False)
         self.btn_warn.clicked.connect(self._show_warn_dialog)
 
         auto_row.addWidget(self.btn_auto, stretch=1)
@@ -550,7 +553,7 @@ class SimulationTab(QWidget):
         left_layout.addStretch()
         main_layout.addWidget(left_scroll)
 
-        # --- Right panel: hamburger toggle + graph toolbar + canvas ---
+        # Right panel: hamburger toggle + graph toolbar + canvas
         right_panel = QWidget()
         right_layout = QVBoxLayout(right_panel)
         right_layout.setContentsMargins(0, 0, 0, 0)
@@ -560,12 +563,11 @@ class SimulationTab(QWidget):
         self.toolbar = NavigationToolbar(self.canvas, self)
         self.toolbar.setStyleSheet("background-color: transparent; border: none;")
 
-        # Hamburger button row — sits in the same position as the toolbar
         toolbar_row = QHBoxLayout()
         toolbar_row.setContentsMargins(s(2), 0, s(2), 0)
         toolbar_row.setSpacing(0)
 
-        self.btn_hamburger = QPushButton("\u2630")  # ☰
+        self.btn_hamburger = QPushButton("\u2630")
         self.btn_hamburger.setFixedSize(s(28), s(28))
         self.btn_hamburger.setToolTip("Show / hide graph tools")
         self.btn_hamburger.setStyleSheet(
@@ -579,7 +581,6 @@ class SimulationTab(QWidget):
         toolbar_row.addWidget(self.btn_hamburger)
         toolbar_row.addStretch()
 
-        # Toolbar starts hidden; hamburger reveals it
         self.toolbar.setVisible(False)
 
         right_layout.addLayout(toolbar_row)
@@ -631,7 +632,7 @@ class SimulationTab(QWidget):
         st.driver_count  = int(self.spin_drv_count.value())
         st.driver_wiring = self.combo_wiring.currentText().lower()
         st.room_gain     = self.chk_room_gain.isChecked()
-        st.flare.pr_fs = self.spin_pr_fs.value()
+        st.flare.pr_fs  = self.spin_pr_fs.value()
         st.flare.pr_vas = self.spin_pr_vas.value()
         st.flare.pr_qms = self.spin_pr_qms.value()
         st.port.shape    = "round" if self.combo_port_shape.currentIndex() == 0 else "slot"
@@ -734,19 +735,14 @@ class SimulationTab(QWidget):
         driver = self._get_driver()
         if not driver:
             return
-
-        # Show one-time info dialog if not yet suppressed this session
         if not _autofill_warned:
             dlg = _AutoFillInfoDialog(self)
             dlg.exec()
             if dlg.suppress_future:
                 _autofill_warned = True
-
         vb, fb = vented_alignment(driver, self.combo_alignment.currentText())
         self.spin_volume.setValue(m3_to_litre(vb))
         self.spin_fb.setValue(round(fb, 1))
-
-        # Reveal warning icon after first use
         self.btn_warn.setVisible(True)
 
     def _get_port_area_and_eq_diam(self):
@@ -853,7 +849,7 @@ class SimulationTab(QWidget):
             self.canvas.plot(freqs, spl, exc, xmax_mm, port_velocity=port_vel, impedance=imp, fb=fb, box_type="bp4")
 
         elif st.box_type == "pr":
-            pr_fs = self.spin_pr_fs.value()
+            pr_fs  = self.spin_pr_fs.value()
             pr_vas = litre_to_m3(self.spin_pr_vas.value())
             pr_qms = self.spin_pr_qms.value()
             spl = passive_radiator_spl_array(driver, pr_fs, pr_vas, pr_qms, vb, freqs, input_power=power)
@@ -863,7 +859,7 @@ class SimulationTab(QWidget):
             exc, xmax_mm = cone_excursion_array(driver, vb, fb_eff, freqs, power, "pr")
             imp = impedance_array(driver, vb, fb_eff, freqs, "pr")
             from ...core.ts_box import pr_excursion_array
-            pr_exc = pr_excursion_array(driver, driver.sd, vb, fb_eff, freqs, exc)
+            pr_exc = pr_excursion_array(driver, driver.sd, pr_qms, vb, fb_eff, freqs, exc)
             f3 = find_f3(freqs, spl)
             self._result_labels["F3"].setText(f"{f3:.1f} Hz")
             self._result_labels["Fb / Fc"].setText(f"Fb = {fb_eff:.1f} Hz")
